@@ -16,7 +16,8 @@ public enum MuninnPaths {
     }
 
     public static var socketPath: String {
-        "\(applicationSupportDir)/muninn.sock"
+        ProcessInfo.processInfo.environment["MUNINN_SOCKET_PATH"]
+            ?? "\(applicationSupportDir)/muninn.sock"
     }
 
     public static func ensureDirectoryExists() throws {

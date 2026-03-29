@@ -59,5 +59,10 @@ let package = Package(
             dependencies: ["MuninnIPC"],
             path: "packages/MuninnIPC/Tests"
         ),
+        .testTarget(
+            name: "MuninnCLITests",
+            dependencies: ["MuninnCore", "MuninnIPC"],
+            path: "apps/muninn-cli/Tests"
+        ),
     ]
 )

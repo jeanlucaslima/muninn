@@ -200,37 +200,63 @@ case "delete":
 
 case "pin":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn pin <id>\n", stderr)
+        fputs("usage: muninn pin <id> [--json]\n", stderr)
         exit(1)
     }
+    let jsonOutput = hasFlag("--json")
 
     let request = IPCRequest(method: "pin", params: .pin(.init(id: id)))
     let data = sendRequest(request)
-    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-    print("pinned #\(entry.id)")
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+        print("pinned #\(entry.id)")
+    }
 
 case "unpin":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn unpin <id>\n", stderr)
+        fputs("usage: muninn unpin <id> [--json]\n", stderr)
         exit(1)
     }
+    let jsonOutput = hasFlag("--json")
 
     let request = IPCRequest(method: "unpin", params: .unpin(.init(id: id)))
     let data = sendRequest(request)
-    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-    print("unpinned #\(entry.id)")
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+        print("unpinned #\(entry.id)")
+    }
 
 case "pause":
+    let jsonOutput = hasFlag("--json")
+
     let request = IPCRequest(method: "pause", params: .pause)
     let data = sendRequest(request)
-    _ = decodeResponse(data, as: [String: Bool].self)
-    print("clipboard watching paused")
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        _ = decodeResponse(data, as: [String: Bool].self)
+        print("clipboard watching paused")
+    }
 
 case "resume":
+    let jsonOutput = hasFlag("--json")
+
     let request = IPCRequest(method: "resume", params: .resume)
     let data = sendRequest(request)
-    _ = decodeResponse(data, as: [String: Bool].self)
-    print("clipboard watching resumed")
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        _ = decodeResponse(data, as: [String: Bool].self)
+        print("clipboard watching resumed")
+    }
 
 case "status":
     let request = IPCRequest(method: "status", params: .status)
@@ -263,10 +289,10 @@ case "help", "--help", "-h":
       muninn get <id> [--json]
       muninn copy <id> [--json]
       muninn delete <id> [--json]
-      muninn pin <id>
-      muninn unpin <id>
-      muninn pause
-      muninn resume
+      muninn pin <id> [--json]
+      muninn unpin <id> [--json]
+      muninn pause [--json]
+      muninn resume [--json]
       muninn status [--json]
       muninn help
 
