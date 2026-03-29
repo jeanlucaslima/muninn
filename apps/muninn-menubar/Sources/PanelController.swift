@@ -59,7 +59,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         if !isShowingSetup {
             viewModel.onPanelOpen()
         }
-        positionPanel()
+        if isShowingSetup {
+            centerPanel()
+        } else {
+            positionPanel()
+        }
         panel.makeKeyAndOrderFront(nil)
     }
 
@@ -89,6 +93,14 @@ final class PanelController: NSObject, NSWindowDelegate {
                 close()
             }
         }
+    }
+
+    private func centerPanel() {
+        guard let screen = NSScreen.main else { return }
+        let visibleFrame = screen.visibleFrame
+        let x = visibleFrame.midX - panel.frame.width / 2
+        let y = visibleFrame.midY - panel.frame.height / 2
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     private func positionPanel() {
