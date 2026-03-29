@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "muninnd", targets: ["muninnd"]),
         .executable(name: "muninn", targets: ["muninn-cli"]),
+        .executable(name: "muninn-menubar", targets: ["muninn-menubar"]),
     ],
     targets: [
         // System module for SQLite
@@ -46,6 +47,12 @@ let package = Package(
             name: "muninn-cli",
             dependencies: ["MuninnCore", "MuninnIPC"],
             path: "apps/muninn-cli/Sources"
+        ),
+
+        .executableTarget(
+            name: "muninn-menubar",
+            dependencies: ["MuninnCore", "MuninnIPC"],
+            path: "apps/muninn-menubar/Sources"
         ),
 
         // Tests
