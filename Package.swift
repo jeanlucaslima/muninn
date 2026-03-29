@@ -58,7 +58,7 @@ let package = Package(
         // Tests
         .testTarget(
             name: "MuninnStoreTests",
-            dependencies: ["MuninnStore"],
+            dependencies: ["MuninnStore", "MuninnCore"],
             path: "packages/MuninnStore/Tests"
         ),
         .testTarget(

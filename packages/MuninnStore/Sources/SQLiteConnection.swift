@@ -83,6 +83,10 @@ public final class SQLiteConnection: @unchecked Sendable {
             sqlite3_bind_int(stmt, index, value)
         }
 
+        public func bindNull(_ index: Int32) {
+            sqlite3_bind_null(stmt, index)
+        }
+
         @discardableResult
         public func step() throws -> Bool {
             connection.lock.lock()

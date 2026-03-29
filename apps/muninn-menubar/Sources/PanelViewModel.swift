@@ -50,7 +50,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     func copySelected() {
-        guard let entry = selectedEntry else { return }
+        guard let entry = selectedEntry, entry.kind == .text else { return }
         Task {
             try? await daemon.copy(id: entry.id)
         }

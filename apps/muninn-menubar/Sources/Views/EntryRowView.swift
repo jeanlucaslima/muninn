@@ -8,7 +8,7 @@ struct EntryRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(normalizePreview(entry.content))
+                Text(normalizePreview(entry.displayContent))
                     .font(.system(size: 13))
                     .foregroundStyle(isSelected ? .white : .primary)
                     .lineLimit(1)

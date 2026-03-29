@@ -34,12 +34,35 @@ public final class ClipboardStore: @unchecked Sendable {
             "CREATE INDEX IF NOT EXISTS idx_content_hash ON clipboard_entries(content_hash)")
         try connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_created_at ON clipboard_entries(created_at DESC)")
+
+        // Version-based migrations
+        try connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+
+        let versionStmt = try connection.prepare("SELECT version FROM schema_version LIMIT 1")
+        let currentVersion: Int
+        if try versionStmt.step() {
+            currentVersion = Int(versionStmt.columnInt(0))
+        } else {
+            try connection.execute("INSERT INTO schema_version (version) VALUES (0)")
+            currentVersion = 0
+        }
+
+        if currentVersion < 1 {
+            try migrateV1()
+        }
     }
 
-    // MARK: - Insert
+    private func migrateV1() throws {
+        try connection.execute(
+            "ALTER TABLE clipboard_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
+        try connection.execute(
+            "ALTER TABLE clipboard_entries ADD COLUMN metadata TEXT")
+        try connection.execute("UPDATE schema_version SET version = 1")
+    }
 
-    /// Inserts a clipboard entry if it differs from the most recent one.
-    /// Returns the result indicating what happened.
+    // MARK: - Insert (text)
+
     @discardableResult
     public func insert(_ content: String) throws -> InsertResult {
         let contentSize = content.utf8.count
@@ -52,7 +75,6 @@ public final class ClipboardStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        // Check if the last entry has the same hash
         let checkStmt = try connection.prepare(
             "SELECT content_hash FROM clipboard_entries ORDER BY id DESC LIMIT 1")
         if try checkStmt.step() {
@@ -62,18 +84,63 @@ public final class ClipboardStore: @unchecked Sendable {
             }
         }
 
-        // Insert
         let insertStmt = try connection.prepare(
-            "INSERT INTO clipboard_entries (content, content_hash) VALUES (?1, ?2)")
+            "INSERT INTO clipboard_entries (content, content_hash, kind) VALUES (?1, ?2, 'text')")
         insertStmt.bind(1, content)
         insertStmt.bind(2, hash)
         try insertStmt.step()
 
         let rowId = connection.lastInsertRowId()
 
-        // Read back the full row to get the server-generated created_at
         let readStmt = try connection.prepare(
-            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE id = ?1")
+            "SELECT id, content, content_hash, created_at, is_pinned, kind, metadata FROM clipboard_entries WHERE id = ?1")
+        readStmt.bind(1, rowId)
+        guard try readStmt.step() else { return .deduplicated }
+
+        return .stored(entryFromStatement(readStmt))
+    }
+
+    // MARK: - Insert (any kind)
+
+    @discardableResult
+    public func insert(kind: EntryKind, content: String, metadata: EntryMetadata?) throws -> InsertResult {
+        if kind == .text {
+            return try insert(content)
+        }
+
+        let placeholder = placeholderContent(kind: kind, metadata: metadata)
+        let metadataJSON = encodeMetadata(metadata)
+        let hash = sha256(kind.rawValue + (metadataJSON ?? ""))
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let checkStmt = try connection.prepare(
+            "SELECT content_hash, kind FROM clipboard_entries ORDER BY id DESC LIMIT 1")
+        if try checkStmt.step() {
+            let lastHash = checkStmt.columnString(0)
+            let lastKind = checkStmt.columnString(1)
+            if lastHash == hash && lastKind == kind.rawValue {
+                return .deduplicated
+            }
+        }
+
+        let insertStmt = try connection.prepare(
+            "INSERT INTO clipboard_entries (content, content_hash, kind, metadata) VALUES (?1, ?2, ?3, ?4)")
+        insertStmt.bind(1, placeholder)
+        insertStmt.bind(2, hash)
+        insertStmt.bind(3, kind.rawValue)
+        if let json = metadataJSON {
+            insertStmt.bind(4, json)
+        } else {
+            insertStmt.bindNull(4)
+        }
+        try insertStmt.step()
+
+        let rowId = connection.lastInsertRowId()
+
+        let readStmt = try connection.prepare(
+            "SELECT id, content, content_hash, created_at, is_pinned, kind, metadata FROM clipboard_entries WHERE id = ?1")
         readStmt.bind(1, rowId)
         guard try readStmt.step() else { return .deduplicated }
 
@@ -89,7 +156,7 @@ public final class ClipboardStore: @unchecked Sendable {
         let total = try countUnlocked()
 
         let stmt = try connection.prepare(
-            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries ORDER BY id DESC LIMIT ?1 OFFSET ?2")
+            "SELECT id, content, content_hash, created_at, is_pinned, kind, metadata FROM clipboard_entries ORDER BY id DESC LIMIT ?1 OFFSET ?2")
         stmt.bind(1, Int64(limit))
         stmt.bind(2, Int64(offset))
 
@@ -108,7 +175,7 @@ public final class ClipboardStore: @unchecked Sendable {
         defer { lock.unlock() }
 
         let stmt = try connection.prepare(
-            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE id = ?1")
+            "SELECT id, content, content_hash, created_at, is_pinned, kind, metadata FROM clipboard_entries WHERE id = ?1")
         stmt.bind(1, id)
         guard try stmt.step() else { return nil }
         return entryFromStatement(stmt)
@@ -122,7 +189,7 @@ public final class ClipboardStore: @unchecked Sendable {
 
         let escaped = escapeLikePattern(query)
         let stmt = try connection.prepare(
-            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE content LIKE ?1 ESCAPE '\\' ORDER BY id DESC LIMIT ?2")
+            "SELECT id, content, content_hash, created_at, is_pinned, kind, metadata FROM clipboard_entries WHERE content LIKE ?1 ESCAPE '\\' ORDER BY id DESC LIMIT ?2")
         stmt.bind(1, "%\(escaped)%")
         stmt.bind(2, Int64(limit))
 
@@ -199,17 +266,23 @@ public final class ClipboardStore: @unchecked Sendable {
         let contentHash = stmt.columnString(2)
         let createdAtStr = stmt.columnString(3)
         let isPinned = stmt.columnInt(4) != 0
+        let kindStr = stmt.columnString(5)
+        let metadataStr = stmt.columnString(6)
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let createdAt = formatter.date(from: createdAtStr) ?? Date()
 
+        let kind = EntryKind(rawValue: kindStr) ?? .text
+        let metadata: EntryMetadata? = {
+            guard !metadataStr.isEmpty, let data = metadataStr.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(EntryMetadata.self, from: data)
+        }()
+
         return ClipboardEntry(
-            id: id,
-            content: content,
-            contentHash: contentHash,
-            createdAt: createdAt,
-            isPinned: isPinned
+            id: id, content: content, contentHash: contentHash,
+            createdAt: createdAt, isPinned: isPinned,
+            kind: kind, metadata: metadata
         )
     }
 
@@ -217,5 +290,34 @@ public final class ClipboardStore: @unchecked Sendable {
         let data = Data(string.utf8)
         let hash = SHA256.hash(data: data)
         return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func placeholderContent(kind: EntryKind, metadata: EntryMetadata?) -> String {
+        switch kind {
+        case .text: return ""
+        case .image:
+            if let w = metadata?.width, let h = metadata?.height {
+                return "<image \(w)\u{00D7}\(h)>"
+            }
+            return "<image>"
+        case .file:
+            if let name = metadata?.name { return "<file: \(name)>" }
+            return "<file>"
+        case .files:
+            if let count = metadata?.count { return "<files: \(count) items>" }
+            return "<files>"
+        case .richText: return "<rich text>"
+        case .html: return "<html>"
+        case .unknown: return "<clipboard item>"
+        }
+    }
+
+    private func encodeMetadata(_ metadata: EntryMetadata?) -> String? {
+        guard let metadata = metadata else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(metadata),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        return str
     }
 }

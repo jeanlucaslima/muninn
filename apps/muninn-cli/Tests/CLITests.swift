@@ -97,13 +97,18 @@ func encodeError(_ detail: IPCErrorDetail) throws -> Data {
 }
 
 /// Creates a test clipboard entry.
-func makeEntry(id: Int64, content: String, isPinned: Bool = false) -> ClipboardEntry {
+func makeEntry(
+    id: Int64, content: String, isPinned: Bool = false,
+    kind: EntryKind = .text, metadata: EntryMetadata? = nil
+) -> ClipboardEntry {
     ClipboardEntry(
         id: id,
         content: content,
         contentHash: "testhash\(id)",
         createdAt: Date(timeIntervalSince1970: 1743200000 + Double(id)),
-        isPinned: isPinned
+        isPinned: isPinned,
+        kind: kind,
+        metadata: metadata
     )
 }
 
@@ -718,6 +723,75 @@ struct ErrorHandlingTests {
         #expect(json["ok"] as? Bool == false)
         let detail = json["errorDetail"] as! [String: Any]
         #expect(detail["category"] as? String == "invalid_request")
+    }
+}
+
+// MARK: - Non-Text Entries
+
+@Suite("CLI Non-Text Entries")
+struct NonTextEntryTests {
+    @Test("List shows placeholders for non-text entries")
+    func listNonTextPlaceholders() throws {
+        let entries = [
+            makeEntry(id: 3, content: "<image 1440\u{00D7}900>", kind: .image,
+                      metadata: EntryMetadata(width: 1440, height: 900)),
+            makeEntry(id: 2, content: "<file: report.pdf>", kind: .file,
+                      metadata: EntryMetadata(name: "report.pdf")),
+            makeEntry(id: 1, content: "hello world", kind: .text),
+        ]
+
+        let (socketPath, server) = try makeMockServer { _ in
+            try encodeSuccess(ListResponseData(entries: entries, total: 3))
+        }
+        defer { server.stop() }
+
+        let result = runCLI(["list"], socketPath: socketPath)
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("<image 1440\u{00D7}900>"))
+        #expect(result.stdout.contains("<file: report.pdf>"))
+        #expect(result.stdout.contains("hello world"))
+    }
+
+    @Test("List JSON includes kind and metadata")
+    func listJsonIncludesKind() throws {
+        let entry = makeEntry(id: 1, content: "<image>", kind: .image,
+                              metadata: EntryMetadata(width: 800, height: 600))
+
+        let (socketPath, server) = try makeMockServer { _ in
+            try encodeSuccess(ListResponseData(entries: [entry], total: 1))
+        }
+        defer { server.stop() }
+
+        let result = runCLI(["list", "--json"], socketPath: socketPath)
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("\"kind\":\"image\""))
+    }
+
+    @Test("Get non-text entry shows placeholder")
+    func getNonText() throws {
+        let entry = makeEntry(id: 1, content: "<files: 3 items>", kind: .files,
+                              metadata: EntryMetadata(count: 3))
+
+        let (socketPath, server) = try makeMockServer { _ in
+            try encodeSuccess(entry)
+        }
+        defer { server.stop() }
+
+        let result = runCLI(["get", "1"], socketPath: socketPath)
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("<files: 3 items>"))
+    }
+
+    @Test("Copy non-text entry fails with error")
+    func copyNonText() throws {
+        let (socketPath, server) = try makeMockServer { _ in
+            try encodeError(.unsupported("cannot copy this item yet"))
+        }
+        defer { server.stop() }
+
+        let result = runCLI(["copy", "1"], socketPath: socketPath)
+        #expect(result.exitCode == 1)
+        #expect(result.stderr.contains("cannot copy this item yet"))
     }
 }
 

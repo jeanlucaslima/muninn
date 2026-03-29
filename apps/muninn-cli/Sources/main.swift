@@ -81,7 +81,7 @@ func printEntries(_ entries: [ClipboardEntry]) {
 
     for entry in entries {
         let timestamp = formatter.string(from: entry.createdAt)
-        let normalized = normalizePreview(entry.content, maxWidth: maxPreviewWidth)
+        let normalized = normalizePreview(entry.displayContent, maxWidth: maxPreviewWidth)
         let pinned = entry.isPinned ? " [pinned]" : ""
         let idStr = String(entry.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
         print("  #\(idStr)  \(timestamp)  \(normalized)\(pinned)")
@@ -161,7 +161,11 @@ case "get":
         print(String(data: data, encoding: .utf8) ?? "{}")
     } else {
         guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-        print(entry.content, terminator: "")
+        if entry.kind == .text {
+            print(entry.content, terminator: "")
+        } else {
+            print(entry.displayContent)
+        }
     }
 
 case "copy":

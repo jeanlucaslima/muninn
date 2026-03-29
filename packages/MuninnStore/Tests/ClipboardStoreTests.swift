@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import MuninnCore
 @testable import MuninnStore
 
 @Suite("ClipboardStore")
@@ -425,5 +426,131 @@ struct ClipboardStoreTests {
 
         let searched = try store.search(query: "pinned")
         #expect(searched[0].isPinned == true)
+    }
+
+    // MARK: - Entry Kinds
+
+    @Test("Text entries have kind text")
+    func textEntryKind() throws {
+        let store = try makeStore()
+        try store.insert("hello")
+
+        let entry = try store.list().entries[0]
+        #expect(entry.kind == .text)
+        #expect(entry.metadata == nil)
+    }
+
+    @Test("Insert image entry with dimensions")
+    func insertImage() throws {
+        let store = try makeStore()
+        let meta = EntryMetadata(width: 1440, height: 900)
+        let result = try store.insert(kind: .image, content: "", metadata: meta)
+
+        guard case .stored(let entry) = result else { Issue.record("expected stored"); return }
+        #expect(entry.kind == .image)
+        #expect(entry.metadata?.width == 1440)
+        #expect(entry.metadata?.height == 900)
+        #expect(entry.content == "<image 1440\u{00D7}900>")
+    }
+
+    @Test("Insert file entry with name")
+    func insertFile() throws {
+        let store = try makeStore()
+        let meta = EntryMetadata(name: "report.pdf", path: "/Users/test/report.pdf")
+        let result = try store.insert(kind: .file, content: "", metadata: meta)
+
+        guard case .stored(let entry) = result else { Issue.record("expected stored"); return }
+        #expect(entry.kind == .file)
+        #expect(entry.metadata?.name == "report.pdf")
+        #expect(entry.content == "<file: report.pdf>")
+    }
+
+    @Test("Insert files entry with count")
+    func insertFiles() throws {
+        let store = try makeStore()
+        let meta = EntryMetadata(count: 3, names: ["a.txt", "b.txt", "c.txt"])
+        let result = try store.insert(kind: .files, content: "", metadata: meta)
+
+        guard case .stored(let entry) = result else { Issue.record("expected stored"); return }
+        #expect(entry.kind == .files)
+        #expect(entry.metadata?.count == 3)
+        #expect(entry.content == "<files: 3 items>")
+    }
+
+    @Test("Insert rich text, html, and unknown entries")
+    func insertOtherKinds() throws {
+        let store = try makeStore()
+
+        try store.insert(kind: .richText, content: "", metadata: nil)
+        try store.insert(kind: .html, content: "", metadata: nil)
+        try store.insert(kind: .unknown, content: "", metadata: nil)
+
+        let entries = try store.list().entries
+        #expect(entries.count == 3)
+        #expect(entries[0].kind == .unknown)
+        #expect(entries[0].content == "<clipboard item>")
+        #expect(entries[1].kind == .html)
+        #expect(entries[1].content == "<html>")
+        #expect(entries[2].kind == .richText)
+        #expect(entries[2].content == "<rich text>")
+    }
+
+    @Test("Dedup consecutive identical non-text entries")
+    func dedupNonText() throws {
+        let store = try makeStore()
+        let meta = EntryMetadata(width: 800, height: 600)
+
+        let e1 = try store.insert(kind: .image, content: "", metadata: meta)
+        let e2 = try store.insert(kind: .image, content: "", metadata: meta)
+
+        guard case .stored = e1 else { Issue.record("expected stored"); return }
+        guard case .deduplicated = e2 else { Issue.record("expected deduplicated"); return }
+        #expect(try store.count() == 1)
+    }
+
+    @Test("Different metadata is not deduplicated")
+    func differentMetadataNotDeduped() throws {
+        let store = try makeStore()
+
+        try store.insert(kind: .file, content: "", metadata: EntryMetadata(name: "a.txt"))
+        try store.insert(kind: .file, content: "", metadata: EntryMetadata(name: "b.txt"))
+
+        #expect(try store.count() == 2)
+    }
+
+    @Test("Non-text then text then same non-text is not deduplicated")
+    func nonTextInterleaved() throws {
+        let store = try makeStore()
+        let meta = EntryMetadata(width: 100, height: 100)
+
+        try store.insert(kind: .image, content: "", metadata: meta)
+        try store.insert("some text")
+        let e3 = try store.insert(kind: .image, content: "", metadata: meta)
+
+        guard case .stored = e3 else { Issue.record("expected stored after interleave"); return }
+        #expect(try store.count() == 3)
+    }
+
+    @Test("Search finds file entries by placeholder name")
+    func searchFindsFileByName() throws {
+        let store = try makeStore()
+        try store.insert("hello world")
+        try store.insert(kind: .file, content: "", metadata: EntryMetadata(name: "report.pdf"))
+
+        let results = try store.search(query: "report")
+        #expect(results.count == 1)
+        #expect(results[0].kind == .file)
+    }
+
+    @Test("Get returns kind and metadata for non-text entries")
+    func getNonTextEntry() throws {
+        let store = try makeStore()
+        try store.insert(kind: .image, content: "", metadata: EntryMetadata(width: 1920, height: 1080))
+
+        let entry = try store.list().entries[0]
+        let fetched = try store.get(id: entry.id)
+        #expect(fetched?.kind == .image)
+        #expect(fetched?.metadata?.width == 1920)
+        #expect(fetched?.metadata?.height == 1080)
     }
 }

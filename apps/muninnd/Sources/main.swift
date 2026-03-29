@@ -17,12 +17,12 @@ print("muninnd: socket at \(MuninnPaths.socketPath)")
 
 // MARK: - Clipboard Watcher (created before server so the handler can capture it)
 
-let watcher = ClipboardWatcher { content in
+let watcher = ClipboardWatcher { capture in
     do {
-        switch try store.insert(content) {
+        switch try store.insert(kind: capture.kind, content: capture.content, metadata: capture.metadata) {
         case .stored(let entry):
-            let preview = entry.content.prefix(60)
-            print("muninnd: captured entry #\(entry.id): \(preview)\(entry.content.count > 60 ? "..." : "")")
+            let preview = String(entry.displayContent.prefix(60))
+            print("muninnd: captured \(entry.kind.rawValue) entry #\(entry.id): \(preview)")
         case .deduplicated:
             break
         case .skippedTooLarge(let contentSize, let maxSize):
@@ -93,6 +93,9 @@ let server = IPCServer(socketPath: MuninnPaths.socketPath) { request in
             }
             guard let entry = try store.get(id: params.id) else {
                 return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
+            }
+            guard entry.kind == .text else {
+                return try encode(IPCResponse<String>.failure(.unsupported("cannot copy this item yet")))
             }
             DispatchQueue.main.sync {
                 ClipboardWriter.write(entry.content)
