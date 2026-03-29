@@ -2,10 +2,16 @@ import Foundation
 import CryptoKit
 import MuninnCore
 
+public enum InsertResult: Sendable {
+    case stored(ClipboardEntry)
+    case deduplicated
+    case skippedTooLarge(contentSize: Int, maxSize: Int)
+}
+
 public final class ClipboardStore: @unchecked Sendable {
     private let connection: SQLiteConnection
     private let lock = NSLock()
-    private let maxContentSize = 1_000_000 // 1 MB
+    public let maxContentSize = 1_000_000 // 1 MB
 
     public init(path: String) throws {
         self.connection = try SQLiteConnection(path: path)
@@ -33,10 +39,13 @@ public final class ClipboardStore: @unchecked Sendable {
     // MARK: - Insert
 
     /// Inserts a clipboard entry if it differs from the most recent one.
-    /// Returns the new entry, or nil if deduplicated or content too large.
+    /// Returns the result indicating what happened.
     @discardableResult
-    public func insert(_ content: String) throws -> ClipboardEntry? {
-        guard content.utf8.count <= maxContentSize else { return nil }
+    public func insert(_ content: String) throws -> InsertResult {
+        let contentSize = content.utf8.count
+        guard contentSize <= maxContentSize else {
+            return .skippedTooLarge(contentSize: contentSize, maxSize: maxContentSize)
+        }
 
         let hash = sha256(content)
 
@@ -49,7 +58,7 @@ public final class ClipboardStore: @unchecked Sendable {
         if try checkStmt.step() {
             let lastHash = checkStmt.columnString(0)
             if lastHash == hash {
-                return nil
+                return .deduplicated
             }
         }
 
@@ -66,9 +75,9 @@ public final class ClipboardStore: @unchecked Sendable {
         let readStmt = try connection.prepare(
             "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE id = ?1")
         readStmt.bind(1, rowId)
-        guard try readStmt.step() else { return nil }
+        guard try readStmt.step() else { return .deduplicated }
 
-        return entryFromStatement(readStmt)
+        return .stored(entryFromStatement(readStmt))
     }
 
     // MARK: - List

@@ -17,9 +17,9 @@ struct ClipboardStoreTests {
         let e2 = try store.insert("world")
         let e3 = try store.insert("foo")
 
-        #expect(e1 != nil)
-        #expect(e2 != nil)
-        #expect(e3 != nil)
+        guard case .stored = e1 else { Issue.record("expected stored"); return }
+        guard case .stored = e2 else { Issue.record("expected stored"); return }
+        guard case .stored = e3 else { Issue.record("expected stored"); return }
 
         let result = try store.list(limit: 10, offset: 0)
         #expect(result.total == 3)
@@ -37,8 +37,8 @@ struct ClipboardStoreTests {
         let e1 = try store.insert("same")
         let e2 = try store.insert("same")
 
-        #expect(e1 != nil)
-        #expect(e2 == nil)
+        guard case .stored = e1 else { Issue.record("expected stored"); return }
+        guard case .deduplicated = e2 else { Issue.record("expected deduplicated"); return }
         #expect(try store.count() == 1)
     }
 
@@ -60,7 +60,7 @@ struct ClipboardStoreTests {
         try store.insert("b")
         let e3 = try store.insert("a")
 
-        #expect(e3 != nil)
+        guard case .stored = e3 else { Issue.record("expected stored"); return }
         #expect(try store.count() == 3)
     }
 
@@ -84,12 +84,25 @@ struct ClipboardStoreTests {
         #expect(page2.entries[1].content == "entry 2")
     }
 
-    @Test("Content over 1MB is rejected")
+    @Test("Content over 1MB is rejected with size info")
     func largeContent() throws {
         let store = try makeStore()
         let big = String(repeating: "x", count: 1_000_001)
         let result = try store.insert(big)
-        #expect(result == nil)
+        guard case .skippedTooLarge(let contentSize, let maxSize) = result else {
+            Issue.record("expected skippedTooLarge"); return
+        }
+        #expect(contentSize == 1_000_001)
+        #expect(maxSize == 1_000_000)
         #expect(try store.count() == 0)
+    }
+
+    @Test("Content exactly at size limit is accepted")
+    func contentAtLimit() throws {
+        let store = try makeStore()
+        let exact = String(repeating: "x", count: 1_000_000)
+        let result = try store.insert(exact)
+        guard case .stored = result else { Issue.record("expected stored"); return }
+        #expect(try store.count() == 1)
     }
 }

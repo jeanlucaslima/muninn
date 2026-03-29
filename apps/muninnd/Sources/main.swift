@@ -59,9 +59,14 @@ print("muninnd: IPC server listening")
 
 let watcher = ClipboardWatcher { content in
     do {
-        if let entry = try store.insert(content) {
+        switch try store.insert(content) {
+        case .stored(let entry):
             let preview = entry.content.prefix(60)
             print("muninnd: captured entry #\(entry.id): \(preview)\(entry.content.count > 60 ? "..." : "")")
+        case .deduplicated:
+            break
+        case .skippedTooLarge(let contentSize, let maxSize):
+            print("muninnd: skipped clipboard entry — content size \(contentSize) bytes exceeds limit of \(maxSize) bytes")
         }
     } catch {
         print("muninnd: error storing clipboard entry: \(error)")
