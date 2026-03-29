@@ -10,6 +10,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let panel: KeyablePanel
     private let statusItem: NSStatusItem
     private let viewModel = PanelViewModel()
+    private var isShowingSetup = false
 
     init(statusItem: NSStatusItem) {
         self.statusItem = statusItem
@@ -55,7 +56,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func open() {
-        viewModel.onPanelOpen()
+        if !isShowingSetup {
+            viewModel.onPanelOpen()
+        }
         positionPanel()
         panel.makeKeyAndOrderFront(nil)
     }
@@ -64,9 +67,27 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.orderOut(nil)
     }
 
+    func showSetup(viewModel setupViewModel: SetupViewModel) {
+        isShowingSetup = true
+        setupViewModel.onComplete = { [weak self] in
+            self?.showMain()
+            self?.close()
+        }
+        let hostingView = NSHostingView(rootView: SetupView(viewModel: setupViewModel))
+        panel.contentView = hostingView
+    }
+
+    func showMain() {
+        isShowingSetup = false
+        let hostingView = NSHostingView(rootView: PanelContentView(viewModel: viewModel))
+        panel.contentView = hostingView
+    }
+
     nonisolated func windowDidResignKey(_ notification: Notification) {
         Task { @MainActor in
-            close()
+            if !isShowingSetup {
+                close()
+            }
         }
     }
 

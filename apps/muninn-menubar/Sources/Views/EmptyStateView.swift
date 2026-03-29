@@ -9,12 +9,9 @@ struct EmptyStateView: View {
         VStack(spacing: 4) {
             switch daemonStatus {
             case .unavailable:
-                Text("Cannot connect to muninnd")
+                Text("Offline")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                Text("Start with: muninnd run")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
             default:
                 if !searchText.isEmpty {
                     Text("No matches for '\(searchText)'")

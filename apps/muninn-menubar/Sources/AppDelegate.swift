@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panelController: PanelController!
     private let hotKeyManager = HotKeyManager()
+    private let helperManager = HelperManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -25,6 +26,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.panelController.toggle()
             }
         }
+
+        helperManager.start()
+
+        if FirstRunManager.isFirstRun {
+            // TODO: detect login-item launch vs user-initiated to avoid
+            // showing setup panel unexpectedly on login-item startup.
+            let setupViewModel = SetupViewModel(helperManager: helperManager)
+            panelController.showSetup(viewModel: setupViewModel)
+            panelController.open()
+        }
+
+        Task {
+            await helperManager.waitForReady()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        helperManager.stop()
     }
 
     @objc private func statusItemClicked() {
