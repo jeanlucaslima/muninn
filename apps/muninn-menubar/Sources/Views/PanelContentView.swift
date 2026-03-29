@@ -24,16 +24,18 @@ struct PanelContentView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(viewModel.entries.enumerated()), id: \.element.id) { index, entry in
-                                EntryRowView(
-                                    entry: entry,
-                                    isSelected: index == viewModel.selectedIndex
-                                )
-                                .id(entry.id)
-                                .onTapGesture {
+                                Button {
                                     viewModel.selectedIndex = index
                                     viewModel.copySelected()
                                     viewModel.requestClose?()
+                                } label: {
+                                    EntryRowView(
+                                        entry: entry,
+                                        isSelected: index == viewModel.selectedIndex
+                                    )
                                 }
+                                .buttonStyle(.plain)
+                                .id(entry.id)
                             }
                         }
                     }

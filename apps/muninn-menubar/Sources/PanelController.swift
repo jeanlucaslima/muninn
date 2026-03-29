@@ -1,16 +1,20 @@
 import AppKit
 import SwiftUI
 
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
-    private let panel: NSPanel
+    private let panel: KeyablePanel
     private let statusItem: NSStatusItem
     private let viewModel = PanelViewModel()
 
     init(statusItem: NSStatusItem) {
         self.statusItem = statusItem
 
-        panel = NSPanel(
+        panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 420),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
             backing: .buffered,
@@ -30,9 +34,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false
         panel.delegate = self
         panel.isOpaque = false
         panel.backgroundColor = .windowBackgroundColor
+        panel.acceptsMouseMovedEvents = true
 
         let hostingView = NSHostingView(rootView: PanelContentView(viewModel: viewModel))
         panel.contentView = hostingView

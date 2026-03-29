@@ -15,26 +15,21 @@ protocol SearchFieldDelegate: AnyObject {
 final class MuninnSearchField: NSTextField {
     weak var keyDelegate: SearchFieldDelegate?
 
-    override func keyDown(with event: NSEvent) {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
         switch event.keyCode {
-        case 0x7E: // Up arrow
-            keyDelegate?.searchFieldMoveUp()
-        case 0x7D: // Down arrow
-            keyDelegate?.searchFieldMoveDown()
-        case 0x24: // Return
-            keyDelegate?.searchFieldConfirm()
-        case 0x35: // Escape
-            keyDelegate?.searchFieldCancel()
         case 0x33 where flags.contains(.command): // Cmd+Delete
             keyDelegate?.searchFieldDeleteEntry()
+            return true
         case 0x23 where flags == [.command, .shift]: // Cmd+Shift+P
             keyDelegate?.searchFieldTogglePause()
+            return true
         case 0x23 where flags == .command: // Cmd+P
             keyDelegate?.searchFieldTogglePin()
+            return true
         default:
-            super.keyDown(with: event)
+            return super.performKeyEquivalent(with: event)
         }
     }
 }
@@ -61,7 +56,6 @@ struct SearchField: NSViewRepresentable {
         }
         nsView.keyDelegate = keyDelegate
 
-        // Become first responder on appear
         DispatchQueue.main.async {
             if let window = nsView.window, window.firstResponder != nsView.currentEditor() {
                 window.makeFirstResponder(nsView)
@@ -84,6 +78,27 @@ struct SearchField: NSViewRepresentable {
             guard let field = obj.object as? NSTextField else { return }
             parent.text = field.stringValue
             parent.keyDelegate?.searchFieldDidChange(field.stringValue)
+        }
+
+        // Intercept commands from the field editor — this is where arrow keys,
+        // Return, and Escape actually arrive while the text field is being edited.
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)):
+                parent.keyDelegate?.searchFieldMoveUp()
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                parent.keyDelegate?.searchFieldMoveDown()
+                return true
+            case #selector(NSResponder.insertNewline(_:)):
+                parent.keyDelegate?.searchFieldConfirm()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.keyDelegate?.searchFieldCancel()
+                return true
+            default:
+                return false
+            }
         }
     }
 }
