@@ -32,6 +32,11 @@ public final class ClipboardWatcher: @unchecked Sendable {
         guard currentCount != lastChangeCount else { return }
         lastChangeCount = currentCount
 
+        // Skip clipboard writes made by Muninn itself
+        if pasteboard.data(forType: MuninnPaths.pasteboardMarkerType) != nil {
+            return
+        }
+
         guard let content = pasteboard.string(forType: .string),
               !content.isEmpty else { return }
 

@@ -101,6 +101,19 @@ public final class ClipboardStore: @unchecked Sendable {
         return (entries, total)
     }
 
+    // MARK: - Get
+
+    public func get(id: Int64) throws -> ClipboardEntry? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stmt = try connection.prepare(
+            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE id = ?1")
+        stmt.bind(1, id)
+        guard try stmt.step() else { return nil }
+        return entryFromStatement(stmt)
+    }
+
     // MARK: - Count
 
     public func count() throws -> Int {

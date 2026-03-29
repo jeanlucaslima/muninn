@@ -14,6 +14,7 @@ public struct IPCRequest: Codable, Sendable {
 
 public enum IPCParams: Codable, Sendable {
     case list(ListParams)
+    case get(GetParams)
     case status
     case empty
 
@@ -27,10 +28,20 @@ public enum IPCParams: Codable, Sendable {
         }
     }
 
+    public struct GetParams: Codable, Sendable {
+        public let id: Int64
+
+        public init(id: Int64) {
+            self.id = id
+        }
+    }
+
     // Custom coding: encode/decode as a flat JSON object
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if let listParams = try? container.decode(ListParams.self),
+        if let getParams = try? container.decode(GetParams.self) {
+            self = .get(getParams)
+        } else if let listParams = try? container.decode(ListParams.self),
            (listParams.limit != nil || listParams.offset != nil) {
             self = .list(listParams)
         } else {
@@ -42,6 +53,8 @@ public enum IPCParams: Codable, Sendable {
         var container = encoder.singleValueContainer()
         switch self {
         case .list(let params):
+            try container.encode(params)
+        case .get(let params):
             try container.encode(params)
         case .status, .empty:
             try container.encode([String: String]())

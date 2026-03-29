@@ -104,17 +104,46 @@ case "status":
         print("  database: \(status.dbPath)")
     }
 
+case "copy":
+    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
+        fputs("usage: muninn copy <id>\n", stderr)
+        exit(1)
+    }
+
+    let request = IPCRequest(method: "get", params: .get(.init(id: id)))
+    let data = sendRequest(request)
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    guard let response = try? decoder.decode(IPCResponse<ClipboardEntry>.self, from: data),
+          response.ok, let entry = response.data else {
+        if let response = try? decoder.decode(IPCResponse<String>.self, from: data),
+           let error = response.error {
+            fputs("error: \(error)\n", stderr)
+        } else {
+            fputs("error: failed to decode response\n", stderr)
+        }
+        exit(1)
+    }
+
+    ClipboardWriter.write(entry.content)
+    let preview = entry.content.prefix(60).replacingOccurrences(of: "\n", with: "\\n")
+    let truncated = entry.content.count > 60 ? "..." : ""
+    print("copied #\(entry.id): \(preview)\(truncated)")
+
 case "help", "--help", "-h":
     print("""
     muninn — clipboard memory
 
     Usage:
       muninn list [--limit N] [--offset N] [--json]
+      muninn copy <id>
       muninn status [--json]
       muninn help
 
     Commands:
       list      List recent clipboard entries
+      copy      Restore entry to clipboard
       status    Show daemon status
       help      Show this help
     """)

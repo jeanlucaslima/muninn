@@ -34,6 +34,19 @@ let server = IPCServer(socketPath: MuninnPaths.socketPath) { request in
         let response = IPCResponse.success(data)
         return try encoder.encode(response)
 
+    case "get":
+        guard case .get(let params) = request.params else {
+            let response = IPCResponse<String>(ok: false, data: nil, error: "missing id parameter")
+            return try encoder.encode(response)
+        }
+        if let entry = try store.get(id: params.id) {
+            let response = IPCResponse.success(entry)
+            return try encoder.encode(response)
+        } else {
+            let response = IPCResponse<String>(ok: false, data: nil, error: "entry not found: \(params.id)")
+            return try encoder.encode(response)
+        }
+
     case "status":
         let count = try store.count()
         let uptime = Int(Date().timeIntervalSince(startTime))
