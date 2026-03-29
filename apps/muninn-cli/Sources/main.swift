@@ -55,6 +55,39 @@ func sendRequest(_ request: IPCRequest) -> Data {
     }
 }
 
+// MARK: - Response Helpers
+
+func decodeResponse<T: Codable & Sendable>(_ data: Data, as type: T.Type) -> T? {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    guard let response = try? decoder.decode(IPCResponse<T>.self, from: data) else {
+        fputs("error: failed to decode response\n", stderr)
+        exit(1)
+    }
+    if !response.ok {
+        fputs("error: \(response.error ?? "unknown error")\n", stderr)
+        exit(1)
+    }
+    return response.data
+}
+
+func printEntries(_ entries: [ClipboardEntry]) {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .short
+    formatter.timeStyle = .short
+
+    let maxPreviewWidth = 80
+    let idWidth = entries.map { String($0.id).count }.max() ?? 1
+
+    for entry in entries {
+        let timestamp = formatter.string(from: entry.createdAt)
+        let normalized = normalizePreview(entry.content, maxWidth: maxPreviewWidth)
+        let pinned = entry.isPinned ? " [pinned]" : ""
+        let idStr = String(entry.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
+        print("  #\(idStr)  \(timestamp)  \(normalized)\(pinned)")
+    }
+}
+
 // MARK: - Commands
 
 switch command {
@@ -77,58 +110,41 @@ case "list":
     if jsonOutput {
         print(String(data: data, encoding: .utf8) ?? "{}")
     } else {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let response = try? decoder.decode(IPCResponse<ListResponseData>.self, from: data),
-              response.ok, let listData = response.data else {
-            fputs("error: failed to decode response\n", stderr)
-            exit(1)
-        }
+        guard let listData = decodeResponse(data, as: ListResponseData.self) else { exit(1) }
 
         if listData.entries.isEmpty {
             print("No clipboard entries yet.")
         } else {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .short
-            formatter.timeStyle = .short
-
-            let maxPreviewWidth = 80
-            let idWidth = listData.entries.map { String($0.id).count }.max() ?? 1
-
-            for entry in listData.entries {
-                let timestamp = formatter.string(from: entry.createdAt)
-                let normalized = normalizePreview(entry.content, maxWidth: maxPreviewWidth)
-                let pinned = entry.isPinned ? " [pinned]" : ""
-                let idStr = String(entry.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
-                print("  #\(idStr)  \(timestamp)  \(normalized)\(pinned)")
-            }
+            printEntries(listData.entries)
             print("\n\(listData.total) total entries")
         }
     }
 
-case "status":
-    let request = IPCRequest(method: "status", params: .status)
+case "search":
+    guard let query = args.dropFirst().first else {
+        fputs("usage: muninn search <query> [--limit N] [--json]\n", stderr)
+        exit(1)
+    }
+    let limit = parseFlag("--limit").flatMap(Int.init) ?? 20
+    let jsonOutput = hasFlag("--json")
+
+    let request = IPCRequest(
+        method: "search",
+        params: .search(.init(query: String(query), limit: limit))
+    )
     let data = sendRequest(request)
 
-    if hasFlag("--json") {
+    if jsonOutput {
         print(String(data: data, encoding: .utf8) ?? "{}")
     } else {
-        let decoder = JSONDecoder()
-        guard let response = try? decoder.decode(IPCResponse<StatusResponseData>.self, from: data),
-              response.ok, let status = response.data else {
-            fputs("error: failed to decode response\n", stderr)
-            exit(1)
+        guard let searchData = decodeResponse(data, as: SearchResponseData.self) else { exit(1) }
+
+        if searchData.entries.isEmpty {
+            print("No entries matching \"\(query)\".")
+        } else {
+            printEntries(searchData.entries)
+            print("\n\(searchData.entries.count) matching entries")
         }
-
-        let hours = status.uptimeSeconds / 3600
-        let minutes = (status.uptimeSeconds % 3600) / 60
-        let seconds = status.uptimeSeconds % 60
-
-        print("muninnd status:")
-        print("  running:  \(status.running)")
-        print("  entries:  \(status.entryCount)")
-        print("  uptime:   \(hours)h \(minutes)m \(seconds)s")
-        print("  database: \(status.dbPath)")
     }
 
 case "copy":
@@ -137,26 +153,79 @@ case "copy":
         exit(1)
     }
 
-    let request = IPCRequest(method: "get", params: .get(.init(id: id)))
+    let request = IPCRequest(method: "copy", params: .copy(.init(id: id)))
     let data = sendRequest(request)
 
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
-    guard let response = try? decoder.decode(IPCResponse<ClipboardEntry>.self, from: data),
-          response.ok, let entry = response.data else {
-        if let response = try? decoder.decode(IPCResponse<String>.self, from: data),
-           let error = response.error {
-            fputs("error: \(error)\n", stderr)
-        } else {
-            fputs("error: failed to decode response\n", stderr)
-        }
+    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+
+    let preview = normalizePreview(entry.content, maxWidth: 60)
+    print("copied #\(entry.id): \(preview)")
+
+case "delete":
+    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
+        fputs("usage: muninn delete <id>\n", stderr)
         exit(1)
     }
 
-    ClipboardWriter.write(entry.content)
-    let preview = entry.content.prefix(60).replacingOccurrences(of: "\n", with: "\\n")
-    let truncated = entry.content.count > 60 ? "..." : ""
-    print("copied #\(entry.id): \(preview)\(truncated)")
+    let request = IPCRequest(method: "delete", params: .delete(.init(id: id)))
+    let data = sendRequest(request)
+    _ = decodeResponse(data, as: [String: Int64].self)
+    print("deleted #\(id)")
+
+case "pin":
+    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
+        fputs("usage: muninn pin <id>\n", stderr)
+        exit(1)
+    }
+
+    let request = IPCRequest(method: "pin", params: .pin(.init(id: id)))
+    let data = sendRequest(request)
+    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+    print("pinned #\(entry.id)")
+
+case "unpin":
+    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
+        fputs("usage: muninn unpin <id>\n", stderr)
+        exit(1)
+    }
+
+    let request = IPCRequest(method: "unpin", params: .unpin(.init(id: id)))
+    let data = sendRequest(request)
+    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+    print("unpinned #\(entry.id)")
+
+case "pause":
+    let request = IPCRequest(method: "pause", params: .pause)
+    let data = sendRequest(request)
+    _ = decodeResponse(data, as: [String: Bool].self)
+    print("clipboard watching paused")
+
+case "resume":
+    let request = IPCRequest(method: "resume", params: .resume)
+    let data = sendRequest(request)
+    _ = decodeResponse(data, as: [String: Bool].self)
+    print("clipboard watching resumed")
+
+case "status":
+    let request = IPCRequest(method: "status", params: .status)
+    let data = sendRequest(request)
+
+    if hasFlag("--json") {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        guard let status = decodeResponse(data, as: StatusResponseData.self) else { exit(1) }
+
+        let hours = status.uptimeSeconds / 3600
+        let minutes = (status.uptimeSeconds % 3600) / 60
+        let seconds = status.uptimeSeconds % 60
+
+        print("muninnd status:")
+        print("  running:  \(status.running)")
+        print("  paused:   \(status.isPaused)")
+        print("  entries:  \(status.entryCount)")
+        print("  uptime:   \(hours)h \(minutes)m \(seconds)s")
+        print("  database: \(status.dbPath)")
+    }
 
 case "help", "--help", "-h":
     print("""
@@ -164,13 +233,25 @@ case "help", "--help", "-h":
 
     Usage:
       muninn list [--limit N] [--offset N] [--all] [--json]
+      muninn search <query> [--limit N] [--json]
       muninn copy <id>
+      muninn delete <id>
+      muninn pin <id>
+      muninn unpin <id>
+      muninn pause
+      muninn resume
       muninn status [--json]
       muninn help
 
     Commands:
       list      List recent clipboard entries
+      search    Search entries by content
       copy      Restore entry to clipboard
+      delete    Remove entry from history
+      pin       Pin an entry
+      unpin     Unpin an entry
+      pause     Pause clipboard watching
+      resume    Resume clipboard watching
       status    Show daemon status
       help      Show this help
     """)

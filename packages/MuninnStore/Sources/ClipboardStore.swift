@@ -114,6 +114,61 @@ public final class ClipboardStore: @unchecked Sendable {
         return entryFromStatement(stmt)
     }
 
+    // MARK: - Search
+
+    public func search(query: String, limit: Int = 20) throws -> [ClipboardEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stmt = try connection.prepare(
+            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE content LIKE ?1 ORDER BY id DESC LIMIT ?2")
+        stmt.bind(1, "%\(query)%")
+        stmt.bind(2, Int64(limit))
+
+        var entries: [ClipboardEntry] = []
+        while try stmt.step() {
+            entries.append(entryFromStatement(stmt))
+        }
+
+        return entries
+    }
+
+    // MARK: - Delete
+
+    @discardableResult
+    public func delete(id: Int64) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stmt = try connection.prepare("DELETE FROM clipboard_entries WHERE id = ?1")
+        stmt.bind(1, id)
+        try stmt.step()
+        return connection.changes() > 0
+    }
+
+    // MARK: - Pin / Unpin
+
+    @discardableResult
+    public func pin(id: Int64) throws -> Bool {
+        try setPinned(id: id, pinned: true)
+    }
+
+    @discardableResult
+    public func unpin(id: Int64) throws -> Bool {
+        try setPinned(id: id, pinned: false)
+    }
+
+    private func setPinned(id: Int64, pinned: Bool) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stmt = try connection.prepare("UPDATE clipboard_entries SET is_pinned = ?1 WHERE id = ?2")
+        stmt.bind(1, Int32(pinned ? 1 : 0))
+        stmt.bind(2, id)
+        try stmt.step()
+        return connection.changes() > 0
+    }
+
     // MARK: - Count
 
     public func count() throws -> Int {

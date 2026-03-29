@@ -7,6 +7,15 @@ public final class ClipboardWatcher: @unchecked Sendable {
     private var lastChangeCount: Int
     private var timer: Timer?
 
+    private let pauseLock = NSLock()
+    private var _isPaused = false
+
+    public var paused: Bool {
+        pauseLock.lock()
+        defer { pauseLock.unlock() }
+        return _isPaused
+    }
+
     public init(interval: TimeInterval = 0.5, onChange: @escaping @Sendable (String) -> Void) {
         self.interval = interval
         self.onChange = onChange
@@ -26,7 +35,22 @@ public final class ClipboardWatcher: @unchecked Sendable {
         timer = nil
     }
 
+    public func pause() {
+        pauseLock.lock()
+        defer { pauseLock.unlock() }
+        _isPaused = true
+    }
+
+    public func resume() {
+        pauseLock.lock()
+        defer { pauseLock.unlock() }
+        _isPaused = false
+        lastChangeCount = NSPasteboard.general.changeCount
+    }
+
     private func poll() {
+        guard !paused else { return }
+
         let pasteboard = NSPasteboard.general
         let currentCount = pasteboard.changeCount
         guard currentCount != lastChangeCount else { return }

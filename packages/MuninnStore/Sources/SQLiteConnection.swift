@@ -50,6 +50,12 @@ public final class SQLiteConnection: @unchecked Sendable {
         return sqlite3_last_insert_rowid(db)
     }
 
+    public func changes() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return Int(sqlite3_changes(db))
+    }
+
     // MARK: - Statement
 
     public final class Statement: @unchecked Sendable {
