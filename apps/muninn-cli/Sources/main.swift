@@ -147,6 +147,23 @@ case "search":
         }
     }
 
+case "get":
+    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
+        fputs("usage: muninn get <id> [--json]\n", stderr)
+        exit(1)
+    }
+    let jsonOutput = hasFlag("--json")
+
+    let request = IPCRequest(method: "get", params: .get(.init(id: id)))
+    let data = sendRequest(request)
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+        print(entry.content, terminator: "")
+    }
+
 case "copy":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
         fputs("usage: muninn copy <id>\n", stderr)
@@ -163,14 +180,20 @@ case "copy":
 
 case "delete":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn delete <id>\n", stderr)
+        fputs("usage: muninn delete <id> [--json]\n", stderr)
         exit(1)
     }
+    let jsonOutput = hasFlag("--json")
 
     let request = IPCRequest(method: "delete", params: .delete(.init(id: id)))
     let data = sendRequest(request)
-    _ = decodeResponse(data, as: [String: Int64].self)
-    print("deleted #\(id)")
+
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        _ = decodeResponse(data, as: [String: Int64].self)
+        print("deleted #\(id)")
+    }
 
 case "pin":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
@@ -234,8 +257,9 @@ case "help", "--help", "-h":
     Usage:
       muninn list [--limit N] [--offset N] [--all] [--json]
       muninn search <query> [--limit N] [--json]
+      muninn get <id> [--json]
       muninn copy <id>
-      muninn delete <id>
+      muninn delete <id> [--json]
       muninn pin <id>
       muninn unpin <id>
       muninn pause
@@ -246,6 +270,7 @@ case "help", "--help", "-h":
     Commands:
       list      List recent clipboard entries
       search    Search entries by content
+      get       Show full content of an entry
       copy      Restore entry to clipboard
       delete    Remove entry from history
       pin       Pin an entry

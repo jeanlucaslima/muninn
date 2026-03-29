@@ -238,6 +238,53 @@ struct ClipboardStoreTests {
         #expect(run1[2].content == "alpha match")
     }
 
+    // MARK: - Get
+
+    @Test("Get returns exact stored content")
+    func getReturnsExactContent() throws {
+        let store = try makeStore()
+        try store.insert("hello world")
+
+        let entry = try store.list().entries[0]
+        let fetched = try store.get(id: entry.id)
+        #expect(fetched != nil)
+        #expect(fetched?.content == "hello world")
+    }
+
+    @Test("Get preserves multiline content")
+    func getPreservesMultiline() throws {
+        let store = try makeStore()
+        let multiline = "line one\nline two\n\nline four"
+        try store.insert(multiline)
+
+        let entry = try store.list().entries[0]
+        let fetched = try store.get(id: entry.id)
+        #expect(fetched?.content == multiline)
+    }
+
+    @Test("Get returns nil for unknown id")
+    func getUnknownId() throws {
+        let store = try makeStore()
+
+        let fetched = try store.get(id: 999)
+        #expect(fetched == nil)
+    }
+
+    @Test("Get returns metadata including pinned state")
+    func getIncludesMetadata() throws {
+        let store = try makeStore()
+        try store.insert("metadata test")
+
+        let entry = try store.list().entries[0]
+        try store.pin(id: entry.id)
+
+        let fetched = try store.get(id: entry.id)
+        #expect(fetched != nil)
+        #expect(fetched?.id == entry.id)
+        #expect(fetched?.isPinned == true)
+        #expect(fetched?.createdAt != nil)
+    }
+
     // MARK: - Delete
 
     @Test("Delete removes existing entry")
@@ -275,6 +322,49 @@ struct ClipboardStoreTests {
 
         let search = try store.search(query: "remove")
         #expect(search.isEmpty)
+    }
+
+    @Test("Repeated delete returns false on second attempt")
+    func deleteRepeated() throws {
+        let store = try makeStore()
+        try store.insert("once only")
+
+        let entry = try store.list().entries[0]
+        let first = try store.delete(id: entry.id)
+        #expect(first == true)
+
+        let second = try store.delete(id: entry.id)
+        #expect(second == false)
+    }
+
+    @Test("Delete works on pinned entries")
+    func deletePinned() throws {
+        let store = try makeStore()
+        try store.insert("pinned entry")
+
+        let entry = try store.list().entries[0]
+        try store.pin(id: entry.id)
+
+        let deleted = try store.delete(id: entry.id)
+        #expect(deleted == true)
+        #expect(try store.get(id: entry.id) == nil)
+    }
+
+    @Test("Delete does not affect other entries")
+    func deleteDoesNotAffectOthers() throws {
+        let store = try makeStore()
+        try store.insert("keep one")
+        try store.insert("to remove")
+        try store.insert("keep two")
+
+        let entries = try store.list().entries
+        let removeId = entries.first { $0.content == "to remove" }!.id
+        try store.delete(id: removeId)
+
+        let remaining = try store.list()
+        #expect(remaining.total == 2)
+        #expect(remaining.entries.map(\.content).contains("keep one"))
+        #expect(remaining.entries.map(\.content).contains("keep two"))
     }
 
     // MARK: - Pin / Unpin
