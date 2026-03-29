@@ -120,9 +120,10 @@ public final class ClipboardStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        let escaped = escapeLikePattern(query)
         let stmt = try connection.prepare(
-            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE content LIKE ?1 ORDER BY id DESC LIMIT ?2")
-        stmt.bind(1, "%\(query)%")
+            "SELECT id, content, content_hash, created_at, is_pinned FROM clipboard_entries WHERE content LIKE ?1 ESCAPE '\\' ORDER BY id DESC LIMIT ?2")
+        stmt.bind(1, "%\(escaped)%")
         stmt.bind(2, Int64(limit))
 
         var entries: [ClipboardEntry] = []
@@ -184,6 +185,13 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    private func escapeLikePattern(_ pattern: String) -> String {
+        pattern
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
 
     private func entryFromStatement(_ stmt: SQLiteConnection.Statement) -> ClipboardEntry {
         let id = stmt.columnInt64(0)

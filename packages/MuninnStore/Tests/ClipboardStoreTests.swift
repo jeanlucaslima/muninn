@@ -151,6 +151,93 @@ struct ClipboardStoreTests {
         #expect(results.isEmpty)
     }
 
+    @Test("Search treats percent as literal character")
+    func searchEscapesPercent() throws {
+        let store = try makeStore()
+        try store.insert("100% done")
+        try store.insert("nothing here")
+        try store.insert("50% complete")
+
+        let results = try store.search(query: "%")
+        #expect(results.count == 2)
+        #expect(results[0].content == "50% complete")
+        #expect(results[1].content == "100% done")
+    }
+
+    @Test("Search treats underscore as literal character")
+    func searchEscapesUnderscore() throws {
+        let store = try makeStore()
+        try store.insert("snake_case")
+        try store.insert("snakeXcase")
+
+        let results = try store.search(query: "_")
+        #expect(results.count == 1)
+        #expect(results[0].content == "snake_case")
+    }
+
+    @Test("Search treats backslash as literal character")
+    func searchEscapesBackslash() throws {
+        let store = try makeStore()
+        try store.insert("C:\\Users\\file")
+        try store.insert("no slash here")
+
+        let results = try store.search(query: "\\")
+        #expect(results.count == 1)
+        #expect(results[0].content == "C:\\Users\\file")
+    }
+
+    @Test("Search finds matches in multiline content")
+    func searchMultilineContent() throws {
+        let store = try makeStore()
+        try store.insert("line one\nline two\nline three")
+        try store.insert("single line")
+
+        let results = try store.search(query: "two")
+        #expect(results.count == 1)
+        #expect(results[0].content.contains("line two"))
+    }
+
+    @Test("Search works with single character query")
+    func searchSingleCharQuery() throws {
+        let store = try makeStore()
+        try store.insert("apple")
+        try store.insert("xyz")
+        try store.insert("banana")
+
+        let results = try store.search(query: "a")
+        #expect(results.count == 2)
+        #expect(results[0].content == "banana")
+        #expect(results[1].content == "apple")
+    }
+
+    @Test("Search applies default limit of 20")
+    func searchDefaultLimit() throws {
+        let store = try makeStore()
+        for i in 1...25 {
+            try store.insert("item \(i)")
+        }
+
+        let results = try store.search(query: "item")
+        #expect(results.count == 20)
+    }
+
+    @Test("Search order is stable and newest-first")
+    func searchOrderStable() throws {
+        let store = try makeStore()
+        try store.insert("alpha match")
+        try store.insert("beta match")
+        try store.insert("gamma match")
+
+        let run1 = try store.search(query: "match")
+        let run2 = try store.search(query: "match")
+
+        #expect(run1.count == 3)
+        #expect(run1.map(\.content) == run2.map(\.content))
+        #expect(run1[0].content == "gamma match")
+        #expect(run1[1].content == "beta match")
+        #expect(run1[2].content == "alpha match")
+    }
+
     // MARK: - Delete
 
     @Test("Delete removes existing entry")
