@@ -166,17 +166,20 @@ case "get":
 
 case "copy":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn copy <id>\n", stderr)
+        fputs("usage: muninn copy <id> [--json]\n", stderr)
         exit(1)
     }
+    let jsonOutput = hasFlag("--json")
 
     let request = IPCRequest(method: "copy", params: .copy(.init(id: id)))
     let data = sendRequest(request)
 
-    guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-
-    let preview = normalizePreview(entry.content, maxWidth: 60)
-    print("copied #\(entry.id): \(preview)")
+    if jsonOutput {
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
+        print("copied #\(entry.id)")
+    }
 
 case "delete":
     guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
@@ -258,7 +261,7 @@ case "help", "--help", "-h":
       muninn list [--limit N] [--offset N] [--all] [--json]
       muninn search <query> [--limit N] [--json]
       muninn get <id> [--json]
-      muninn copy <id>
+      muninn copy <id> [--json]
       muninn delete <id> [--json]
       muninn pin <id>
       muninn unpin <id>
