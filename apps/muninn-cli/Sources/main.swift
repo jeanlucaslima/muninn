@@ -16,6 +16,25 @@ func hasFlag(_ flag: String) -> Bool {
     args.contains(flag)
 }
 
+// MARK: - Preview
+
+/// Collapse whitespace into a single line and truncate to maxWidth.
+func normalizePreview(_ content: String, maxWidth: Int) -> String {
+    let collapsed = content
+        .split(omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace || $0.isNewline })
+        .joined(separator: " ")
+
+    if collapsed.isEmpty {
+        return "(empty)"
+    }
+
+    if collapsed.count <= maxWidth {
+        return collapsed
+    }
+
+    return String(collapsed.prefix(maxWidth - 1)) + "\u{2026}"
+}
+
 // MARK: - Client
 
 func makeClient() -> IPCClient {
@@ -40,7 +59,12 @@ func sendRequest(_ request: IPCRequest) -> Data {
 
 switch command {
 case "list":
-    let limit = parseFlag("--limit").flatMap(Int.init) ?? 20
+    let limit: Int
+    if hasFlag("--all") {
+        limit = Int.max
+    } else {
+        limit = parseFlag("--limit").flatMap(Int.init) ?? 20
+    }
     let offset = parseFlag("--offset").flatMap(Int.init) ?? 0
     let jsonOutput = hasFlag("--json")
 
@@ -66,14 +90,17 @@ case "list":
         } else {
             let formatter = DateFormatter()
             formatter.dateStyle = .short
-            formatter.timeStyle = .medium
+            formatter.timeStyle = .short
+
+            let maxPreviewWidth = 80
+            let idWidth = listData.entries.map { String($0.id).count }.max() ?? 1
 
             for entry in listData.entries {
                 let timestamp = formatter.string(from: entry.createdAt)
-                let preview = entry.content.prefix(60).replacingOccurrences(of: "\n", with: "\\n")
+                let normalized = normalizePreview(entry.content, maxWidth: maxPreviewWidth)
                 let pinned = entry.isPinned ? " [pinned]" : ""
-                let truncated = entry.content.count > 60 ? "..." : ""
-                print("  #\(entry.id)  \(timestamp)  \(preview)\(truncated)\(pinned)")
+                let idStr = String(entry.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
+                print("  #\(idStr)  \(timestamp)  \(normalized)\(pinned)")
             }
             print("\n\(listData.total) total entries")
         }
@@ -136,7 +163,7 @@ case "help", "--help", "-h":
     muninn — clipboard memory
 
     Usage:
-      muninn list [--limit N] [--offset N] [--json]
+      muninn list [--limit N] [--offset N] [--all] [--json]
       muninn copy <id>
       muninn status [--json]
       muninn help
