@@ -49,21 +49,21 @@ We don't use a theorem prover for the system. It can't prove how macOS pasteboar
 
 | ID | Claim | Level | Gate | Decides | Status |
 |---|---|---|---|---|---|
-| PROOF-001 | Signed app + helper can get persistent pasteboard access with clear attribution; CLI ↔ helper communication works | L2 | A | D23, onboarding (§4.16) | Proposed |
-| PROOF-002 | IPC caller identity: signed app and CLI accepted, everything else rejected; terminal binding comes from the kernel; **socket vs. XPC compared on reliability and implementation cost** | L2 | A | D21, §4.6, §4.12 binding | Proposed |
-| PROOF-003 | Keychain lifecycle: private access group, behavior across lock/unlock/restart, missing-key handling, lock signals for an agent | L2 | A | D3, §4.4 | Proposed |
-| PROOF-004 | SQLCipher + FTS5 (word + trigram) from the exact package: encrypted, correct, fast enough at 100k | L1–L3 | A | D2, D16, §4.7 | Proposed |
-| PROOF-005 | Chunked assets **inside** SQLCipher: size, latency, WAL behavior, vacuum, backup and restore cost, bounded memory, chunk size. Decides whether an external store is ever needed. | L3 | B | D15 | Proposed |
-| PROOF-006 | Access policy holds against a scripted signed CLI: every scope × command, `metadata` refuses text queries, protected items excluded without leaking counts, sessions bound to a terminal | L2 | B | §4.12 | Proposed |
-| PROOF-007 | `list` "as of" pagination never duplicates or skips under concurrent captures, re-captures, deletions and reprocessing; `search --all` is stable within one read transaction | L1–L2 | B | §4.7 | Proposed |
-| PROOF-008 | Capture guarantees: gap detection, coalescing, backpressure bounds, self-copy recorded once, capture-path targets; cost of indexing small text inside the capture transaction | L2–L3 | B | §4.8, D30 | Proposed |
+| PROOF-001 | **Layout matrix (with PROOF-003):** pasteboard access and onboarding for a signed app and helper; helper location × reader process × worker launch × Keychain group × referenced-file access; peak memory of large pasteboard reads; all on the minimum OS | L2 | A | D23, D38, §4.16 | Proposed |
+| PROOF-002 | Caller identity over XPC (signed app and CLI accepted, everything else rejected); session binding to the terminal's session leader, including tty reuse and no-terminal callers; every §4.6 transport requirement met | L2 | A | D21, D33, §4.6, §4.12 | Proposed |
+| PROOF-003 | Keychain: private access group for a Developer ID helper (bare vs. bundled); `AfterFirstUnlock` vs. `WhenUnlocked` across lock, restart and missing keys; lock signals for an agent; the helper can launch the embedded sandboxed worker in each packaging variant | L2 | A | D3, D38, §4.4 | Proposed |
+| PROOF-004 | SQLCipher + FTS5 from the exact package: encrypted, no plaintext artifacts; **trigram-only baseline first**, two indexes only if it fails relevance; latency and size at 100k | L1–L3 | A | D2, D16, D35, §4.7 | Proposed |
+| PROOF-005 | Chunked assets inside SQLCipher against a **sizing target** (light, typical and heavy users at 1 and 3 years): DB size, latency, WAL behavior, vacuum, backup and Time Machine cost, chunk size | L3 | B | D15, D34 | Proposed |
+| PROOF-006 | Access policy against a scripted signed CLI: every scope × command, `metadata` refuses text queries, protected items excluded without leaking counts, session binding (reused tty, no terminal), lock | L2 | B | §4.12, D36, D39 | Proposed |
+| PROOF-007 | `--all` streams are consistent under concurrent captures, deletions and reprocessing, and a stalled reader is cut off by the stream deadline before the WAL grows unbounded | L1–L2 | B | §4.7 | Proposed |
+| PROOF-008 | Capture guarantees: gap detection (excluding self-writes), coalescing, backpressure bounds, self-copy recorded once, identity for omitted representations (never merged), capture-path targets, capture-to-searchable time | L2–L3 | B | §4.3, §4.8, D6, D30 | Proposed |
 | PROOF-009 | Helper memory baseline and scale independence (100 vs. 100k items) | L3 | B | §4.13 budgets | Proposed |
-| PROOF-010 | Migration of a **copy** of a real v1 DB: hashes, timestamps, pins, duplicates preserved; failure leaves v1 untouched | L2 | C | §5 | Proposed |
-| PROOF-011 | Session lock: no data served while locked, sessions ended, clean resume, on a release-signed build. Key-buffer wiping is checked as defense in depth. | L2 | C | §4.4 | Proposed |
+| PROOF-010 | Migration of a **copy** of a real v1 DB: text identity recomputed, non-text rows never merged, timestamps and pins preserved, DBs without `schema_version` detected; failure leaves v1 untouched | L2 | C | §5 | Proposed |
+| PROOF-011 | Lock behavior on a release-signed build: no data served while locked, sessions ended, clean resume; with `WhenUnlocked` (if adopted), no orphan path on a locked restart | L2 | C | §4.4 | Proposed |
 | PROOF-012 | Restart and crash recovery: helper killed at every capture step; no lost or duplicated history; assets complete or absent, never partial | L2 | C | §4.3, §4.8 | Proposed |
-| PROOF-013 | Worker isolation: deliberately crashing OCR/PDF jobs; the helper survives, jobs are recoverable or quarantined, memory returns | L2–L3 | D | D17 | Proposed |
+| PROOF-013 | Worker isolation: deliberately crashing OCR/PDF/HTML jobs; the helper survives, jobs are recoverable or quarantined, memory returns; an HTML-to-text extractor that works in the sandbox | L2–L3 | D | D17 | Proposed |
 | PROOF-014 | Processing idempotency under fault injection | L1–L2 | D | §4.8 | Proposed |
-| PROOF-015 | Abuse suite: floods (high- and low-confidence attribution modes), giant payloads, crafted files, IPC floods stay within limits and are labeled | L2–L3 | D | §4.14 | Proposed |
+| PROOF-015 | Abuse suite: clipboard flood and repeat flood (both attribution modes), 2 GB text, 500 MB TIFF, 50k×50k PNG, 20k-page PDF, deeply nested HTML, 100k-file Finder copy, a slow promise provider, full disk, IPC connection/request floods and slow readers while the panel stays responsive | L2–L3 | D | §4.14 | Proposed |
 | PROOF-016 | 30-day memory soak: no upward trend in idle footprint | L3 | D | §4.13 | Proposed |
 | PROOF-017 | Secure Enclave wrapping: real benefit and unattended unlock | L2 | — | D22 | Deferred |
 
@@ -71,105 +71,112 @@ We don't use a theorem prover for the system. It can't prove how macOS pasteboar
 
 ## Gate A — platform feasibility
 
-### PROOF-001: Signed app, helper and pasteboard access
+Gate A proofs share one rule: they run on the **minimum OS** (D5), in a **separate macOS user account** where permission or Keychain state would otherwise be polluted, and PROOF-001 and PROOF-003 are run **together as one layout matrix**, because their answers constrain each other.
 
-**Hypothesis.** A signed `Muninn.app` with an embedded helper registered via `SMAppService.agent` can:
-1. obtain **persistent** pasteboard access through a deliberate onboarding action
-2. show the user a clear "Muninn" identity, both in the alert and in System Settings
-3. keep reading after app quit, helper restart, logout and reboot without new alerts
-4. talk to a signed CLI over the socket
+### PROOF-001: Pasteboard access and the bundle layout matrix
 
-**Experiment** (`spikes/PROOF-001/`). Use a minimal app, helper and CLI signed with the dev Team ID, and a **fresh macOS user account** so the permission starts at `.default`.
-1. Record `accessBehavior` at each step.
-2. Click *Enable* in the app and trigger the read from **the helper**. Record the alert (screenshot), the name and icon shown, and the System Settings entry.
-3. Repeat with **the app** as the reader.
-4. Probe which calls trigger the alert, from both processes: `changeCount`, `types`, `detectMetadata`, `detectPatterns`, `data(forType:)`.
-5. Check whether the alert offers persistent choices and whether a deep link to the settings pane exists.
-6. Set Always Allow, then: quit the app, `launchctl kickstart -k` the helper, log out and in, reboot. Record whether reading still works without alerts.
-7. Read the pasteboard off the main thread in the helper.
-8. Have the CLI send `hello` and `status` to the helper.
+**Hypothesis.** A signed `Muninn.app` with a helper hosted by `SMAppService.agent` can:
+1. obtain **persistent** pasteboard access through a deliberate onboarding action, with a clear "Muninn" identity in the alert and System Settings
+2. keep reading after app quit, helper restart, logout and reboot without new alerts
+3. do so in a bundle layout that also satisfies PROOF-003 (Keychain group, worker launch)
+4. read large representations with a known, acceptable memory peak
+
+**Experiment** (`spikes/PROOF-001/`), signed with the dev Team ID, in a fresh user account so the permission starts at `.default`:
+1. **Layout matrix:** helper location (bare executable in `Contents/MacOS` vs. bundled login item) × reader (helper vs. app). For each cell, record PROOF-003's Keychain result and whether the helper can launch the embedded sandboxed worker.
+2. Record `accessBehavior` at each step. Click *Enable* and trigger the first read from the candidate reader. Record the alert (screenshot), the name and icon shown, and the System Settings entry.
+3. Probe which calls trigger the alert, from each process: `changeCount`, `types`, `detectMetadata`, `detectPatterns`, `data(forType:)`.
+4. Check whether the alert offers persistent choices, and whether a deep link to the settings pane exists.
+5. Set Always Allow, then quit the app, restart the helper (`launchctl kickstart -k`), log out and in, and reboot. Record whether reading continues without alerts.
+6. Read the pasteboard off the main thread in the reader.
+7. **Memory peak:** copy 500 MB and 2 GB representations; record the reader's peak `phys_footprint` and whether any API reports a size before reading.
+8. **Referenced files:** copy files from Desktop, Documents, Downloads, iCloud Drive and a removable volume. Record whether recording the pasteboard's URL and resource values triggers any privacy (TCC) prompt in the helper, and confirm that bookmark creation from the app on user action is attributed to the app.
+9. The CLI connects to the helper over XPC and calls `hello` and `status`.
 
 **Acceptance.**
-- Permission and attribution behavior are **fully explained** for both reader options. That's enough to settle D23.
-- At least one option gives persistent, alert-free capture across all transitions in step 6.
-- Off-main reads either work or have a documented alternative.
+- Permission and attribution behavior are fully explained for both reader options; D23 can be decided.
+- At least one layout cell gives persistent, alert-free capture across step 5 **and** passes PROOF-003; that cell fixes D38.
+- The large-read peak is measured and documented (invariant 10 states it); capture without background file access raises no TCC prompts.
 
-**Evidence required.** Screenshots of the alerts and System Settings, `accessBehavior` logs per step, per-call trigger table, environment, signing details (`codesign -dvvv`).
+**If it fails.** If no cell works with the helper as reader, the app reads (§4.16 fallback). If neither reader gets persistent access, capture becomes app-foreground-only and §1.2 goal 2 is rewritten. If the large-read peak is unacceptable, the per-capture cap in `MuninnLimits` drops, and reading in a short-lived process is reconsidered.
 
-**Decision.** Pending: D23 (helper vs. app as reader); onboarding flow details in §4.16.
+**Evidence required.** Screenshots of alerts and System Settings, `accessBehavior` logs per step, the per-call trigger table, the layout matrix with results, peak-memory measurements, TCC observations, environment and `codesign -dvvv` for each binary.
 
-### PROOF-002: IPC caller identity
+**Decision.** D23, D38; onboarding details in §4.16.
 
-**Hypothesis.** On a Unix socket, the helper can reliably tell the signed Muninn app and CLI from any other process running as the user, using peer UID and the audit token checked against a `SecCode` designated requirement. It can also read a CLI peer's controlling terminal and audit session **from the kernel**, for session binding.
+### PROOF-002: Caller identity, session binding, transport
 
-**Experiment** (`spikes/PROOF-002/`). The helper accepts connections and logs its identity decision for each one. Clients:
+**Hypothesis.** An XPC Mach service with `xpc_connection_set_peer_code_signing_requirement` accepts only the signed Muninn app and CLI, meets every transport requirement in §4.6, and lets the helper identify a CLI caller's **terminal session leader** (pid plus pid version, from the audit token), so a session can't outlive it or pass to a terminal that reuses its tty.
+
+**Experiment** (`spikes/PROOF-002/`). The helper logs its identity decision for each client:
 - the signed CLI and the signed app
 - an unsigned build of the same CLI source
 - a CLI ad-hoc signed with the right identifier but the wrong team
-- `socat` and `nc`
-- a Python client
-- the signed CLI run from a terminal, from `launchd`/cron, under `script`, from a child process of an authorized terminal, and with its binary copied and modified (signature broken)
+- a binary copied from the bundle and modified (broken signature)
+- the signed CLI run from a terminal, from `launchd`/cron (no terminal), under `script`, and from a child process of an authorized terminal
 
-Also build an **XPC Mach-service variant** using `xpc_connection_set_peer_code_signing_requirement` (D21), with the same capabilities: identity check, concurrent requests with cancellation, a streamed binary payload (and `SCM_RIGHTS` file-descriptor passing on the socket), and an event subscription. Record the **lines of code and moving parts** for each, not just whether it works.
+For session binding: open a terminal, start a session, close the terminal, open new terminals until one reuses the tty, and confirm the session doesn't carry over; confirm that "terminal closed" is detected (session-leader exit).
+
+Exercise every §4.6 requirement over XPC: version handshake, concurrent requests with cancellation, a streamed 500 MB payload, event subscription with liveness. Also try the helper verifying a LocalAuthentication result handed over by the app (D33) and record its cost.
 
 **Acceptance.**
-- Every non-Muninn client is rejected before any request is read.
-- The signed clients are accepted.
-- Terminal and audit-session info matches reality for every launch context, including the cases we accept as limitations (child of an authorized terminal).
-- **D21 is decided on evidence:** the socket stays only if it's as reliable as XPC and its extra implementation cost is justified by concrete needs (inspectability, one wire format). Otherwise, switch to XPC.
+- Every non-Muninn client is rejected before any request is processed; signed clients are accepted.
+- Session-leader identity is correct in every launch context; tty reuse never inherits a session; callers without a terminal are identified as such.
+- XPC meets every §4.6 requirement.
 
-**Evidence required.** A per-client decision log, the kernel-derived TTY/session values per launch context, signing details for each binary, release-signed run.
+**If it fails.** If XPC can't meet a requirement, build the Unix-socket variant for that requirement only and compare (D21). If session-leader binding is unreliable, sessions bind to a shorter-lived key (per tty and process start time) with shorter lifetimes, and §1.5 is updated.
 
-**Decision.** Pending: D21; §4.6 layer 3; §4.12 session binding.
+**Evidence required.** Per-client decision log, kernel-derived session values per launch context, the tty-reuse trace, payload and cancellation measurements, signing details, release-signed run.
 
-### PROOF-003: Keychain lifecycle and lock state
+**Decision.** D21, D33; §4.6; session binding in §4.12.
 
-**Hypothesis.** A Developer ID helper can store and read a key in the **data-protection keychain** under a **private access group** (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), with predictable behavior across lock, unlock, sleep, restart and missing-key cases. A background agent can reliably observe screen lock and unlock.
+### PROOF-003: Keychain lifecycle, lock state, worker launch
 
-**Experiment** (`spikes/PROOF-003/`), in a separate user account:
-1. Sign the helper with the `keychain-access-groups` entitlement: (a) as a bare executable, (b) as a bundled helper app. Record whether a provisioning profile is required and whether each variant can access the item.
-2. Confirm the app and CLI (without the entitlement) **can't** read the item.
-3. Read the key: after login; while the screen is locked; after unlock; after sleep and wake; after reboot before and after first unlock.
-4. Delete the item and restart the helper: the orphaned-DB path must trigger, and no new key may be written over existing data.
+**Hypothesis.** A Developer ID helper can keep its key in the **data-protection keychain** under a **private access group**, with predictable behavior across lock, unlock, sleep, restart and missing-key cases, and can launch the embedded sandboxed worker, in at least one packaging variant.
+
+**Experiment** (`spikes/PROOF-003/`), in a separate user account, run with PROOF-001's layout matrix:
+1. Sign the helper with `keychain-access-groups`: (a) as a bare executable, (b) as a bundled login item. Record whether a provisioning profile is required and whether each variant can access the item.
+2. Confirm the app, CLI and worker (without the entitlement) **can't** read the item.
+3. With `AfterFirstUnlockThisDeviceOnly` **and** with `WhenUnlockedThisDeviceOnly`, read the key after login, while locked, after unlock, after sleep and wake, and after reboot before and after first unlock. Record the exact error codes.
+4. Delete the item and restart the helper: the orphan path must trigger, and no new key may be written over existing data. With `WhenUnlocked`, restart the helper **while locked**: the orphan path must **not** trigger.
 5. Compare candidate lock/unlock signals for a UI-less agent, including fast user switching.
-6. Measure how long the full lock sequence takes (close DB, wipe key buffers) and confirm key buffers are zeroed (memory inspection in a debug build).
+6. From each packaging variant, launch the embedded sandboxed `muninn-worker` XPC service and exchange a message.
 
 **Acceptance.**
-- One packaging variant works without unacceptable provisioning constraints (or the constraint is documented and accepted in §4.1/§4.5).
-- Accessibility behaves as documented; at least one lock signal is reliable for the agent.
-- Missing keys never cause silent history loss.
+- One packaging variant works without unacceptable provisioning constraints, or the constraint is documented and accepted.
+- Accessibility classes behave as documented; at least one lock signal is reliable for the agent.
+- Missing keys never cause silent history loss, and a locked restart is never mistaken for a missing key.
+- The worker launches in the chosen variant.
 
-**Evidence required.** Entitlement and provisioning details, an access matrix (process × state), lock-signal timing logs, orphan-path logs, release-signed run.
+**If it fails.** If no variant gets a private group, fall back to the legacy keychain with the item's access control limited to the helper's signature, and update §1.5. If the worker can't be launched from the helper's location, the worker moves with the helper, or the helper becomes a bundle. If no lock signal is reliable, the policy treats sleep and screen-saver start as lock.
 
-**Decision.** Pending: helper packaging (bundle vs. bare executable); §4.4 as written; D22 stays deferred.
+**Evidence required.** Entitlement and provisioning details, an access matrix (process × state × accessibility class), error codes, lock-signal timing logs, orphan-path logs, worker launch logs, release-signed run.
+
+**Decision.** D3, D38; the accessibility class and lock handling in §4.4; D22 stays deferred.
 
 ### PROOF-004: Encrypted search with SQLCipher and FTS5
 
-**Hypothesis.** SQLCipher's official Swift package, built in our exact configuration, provides an encrypted database, encrypted WAL and journal, and FTS5 with `unicode61 remove_diacritics 2` and `trigram`. It meets our search requirements at 100k items without plaintext artifacts on disk.
+**Hypothesis.** SQLCipher's official Swift package, built as Muninn builds it, gives an encrypted DB, WAL and journal, plus FTS5 with the `trigram` tokenizer, and **one trigram index** (plus a short-term fallback) meets the §4.7 relevance and latency targets at 100k items with no plaintext on disk.
 
 **Experiment** (`spikes/PROOF-004/`):
-1. Build the package as Muninn will (`SQLITE_HAS_CODEC`, pinned version). Record `cipher_version`, `sqlite_version()` and compile options.
-2. Generate the seeded 100k-item corpus (§4.7: PT/EN prose, code, URLs, UUIDs, OCR-like text, large logs).
-3. Build both indexes and run the §4.7 relevance cases and latency suite.
-4. Try the trigram configurations (case-sensitive or not, diacritic removal) and record where `LIKE`/`GLOB` acceleration applies, per SQLite's documented restrictions.
-5. Inspect the DB, WAL and journal files and temp directories for plaintext canaries seeded in the corpus.
-6. Confirm that opening without the key fails.
-7. Restart and run `integrity-check` on both indexes.
-8. Record index sizes relative to text size, with and without a trigram cap (D16).
+1. Build the package (`SQLITE_HAS_CODEC`, pinned version); record `cipher_version`, `sqlite_version()` and compile options.
+2. Generate the seeded 100k-item corpus (§4.7).
+3. **Baseline:** one trigram index plus the fallback for terms under 3 characters. Run the relevance cases and latency suite.
+4. Only for cases the baseline fails: add the `unicode61` word index with rank fusion and rerun.
+5. Try the trigram options (case handling, diacritic removal) and record where `LIKE`/`GLOB` acceleration applies, per SQLite's documented restrictions.
+6. Scan the DB, WAL, journal and temp directories for seeded plaintext canaries; confirm that opening without the key fails.
+7. Restart and run `integrity-check`.
+8. Record index size relative to text size (D16).
 
 **Acceptance.**
-- All relevance cases pass.
-- Latency meets the §4.7 targets, or the targets are revised with evidence.
-- **No canary appears in any file.**
-- Integrity checks pass after restart.
-- The license is confirmed acceptable.
+- All relevance cases pass with the chosen shape; latency meets §4.7 or targets are revised with evidence.
+- No canary appears in any file; integrity checks pass after restart; the license is confirmed.
 
-**Evidence required.** Build configuration, benchmark JSON, relevance results, canary-scan output, size table, environment.
+**If it fails.** If the package lacks a working `trigram` tokenizer or fails the encryption checks, try building SQLCipher from the amalgamation with the needed flags (D2's earlier option). If no configuration meets relevance, revisit the query model (§4.7) before gate B.
 
-**Decision.** Pending: D2 (package), D16 (trigram cap), tokenizer configuration in §4.7.
+**Evidence required.** Build configuration, benchmark JSON, relevance results per index shape, canary-scan output, size table, environment.
 
----
+**Decision.** D2, D16, D35.
 
 ## Gates B–D
 
-Entries for PROOF-005 to PROOF-017 are written out in full (hypothesis, experiment, acceptance, evidence, decision) **before their gate starts**, based on what gate A taught us. Their claims are in the register above, and the related design sections already state the targets they'll be measured against.
+Entries for PROOF-005 to PROOF-017 are written out in full (hypothesis, experiment, acceptance, **if it fails**, evidence, decision) **before their gate starts**, based on what gate A taught us. Their claims are in the register above, and the related design sections already state the targets they'll be measured against.

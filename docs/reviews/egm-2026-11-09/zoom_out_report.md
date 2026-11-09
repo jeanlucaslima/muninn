@@ -240,3 +240,230 @@ Classified 2026-11-09 by the maintainer. The elephant's proposals were reviewed;
 | C7 | Valid (brief) | §4.16 states the constraints for the app-as-reader fallback; it's designed in full only if PROOF-001 chooses it. |
 
 **Next:** run `/egm:egm-review` again on the revised design. The Zoom Out stage should confirm the scope reduction; the later stages then review the slimmer doc.
+
+---
+
+# Re-audit (Stage 5, round 2)
+
+## Scope and inputs
+
+- **Target:** the revised `docs/designs/muninn-v2.md` (1,128 lines), working copy as of 2026-11-09, after the maintainer's round-1 changes. Round 1 reviewed the doc as committed in `272b082` on `v2/design`.
+- **Reviewers:** a fresh `egm-zoom-out` and a fresh `egm-inventive-catalyst`. Neither saw the round-1 findings or anything under `docs/reviews/`.
+- **Context:** `docs/decisions.md` and `docs/proofs.md` only. They did not receive `docs/brand.md`.
+- **Isolation:** same as round 1. The zoom-out reviewer checked §2 against the v1 code and confirmed: `MuninnPaths.pasteboardMarkerType`, the `nonisolated(unsafe)` global in `HotKeyManager`, `HelperManager`, and the socket `unlink` in `IPCServer.swift`.
+- **Cap:** this is Stage 5's one allowed re-audit. Any further findings become accepted trade-offs unless the maintainer acts on them.
+
+**Verdicts:**
+- **Zoom-out:** Revise. No Blockers, 7 Major and 5 Nits.
+- **Catalyst:** the foundation holds up. No Blockers, 5 Major and 2 Nits.
+
+**"Returning"** marks a finding that reopens something the maintainer already classified in round 1. The maintainer's earlier decision stands unless they revisit it.
+
+| ID | Returning? | Related round-1 decision |
+|---|---|---|
+| R-Z1 | partly | Z1 (Valid): gate C/D cut. The reviewer says §4.6, §4.9 and §4.16 still have more detail than their gate allows. |
+| R-Z2, R-C6 | yes | Z3 (Needs proof): PROOF-002 compares socket and XPC. |
+| R-Z3 | yes | C6 (Valid): key wiping kept as defense in depth. |
+| R-Z5 | yes | Z6/C5 (Valid): the maintainer chose "as of" keyset paging for `list`. |
+| R-Z7 | yes | Z4 (override): the `metadata` scope is kept. |
+| R-C1 | related | C6 / D25: a different route to a meaningful lock. |
+| R-C2 | related | Z2/C1 (Valid): inline only; a new middle option. |
+| All others | new | |
+
+---
+
+## Zoom-out reviewer (round 2)
+
+### 🟡 R-Z1. Text for later gates still has more detail than the "detail follows the gate" rule allows (§7 lines 1104–1105, against §4.6 458–474, §4.9 700–712, §4.14 905–952, §4.16 968–1011) *(partly returning: Z1)*
+- **What's wrong:** the doc still fully specifies these, even though each depends on a proof or belongs to gate C/D:
+  - the socket wire protocol (depends on PROOF-002)
+  - the 4-step onboarding state machine (depends on PROOF-001)
+  - the "app becomes the reader" constraint list
+  - two-mode flood handling (gate D)
+  - specific abuse fixtures (2 GB text, 50k×50k PNG, 20k-page PDF, 100k files)
+- **Why it matters:** proofs.md rule 6 makes any proof failure a large rewrite of the doc.
+- **Suggestion:**
+  - Reduce these sections to intent, constraint and deciding proof.
+  - Move the fixtures to PROOF-015.
+  - Move frame details to a future IPC spec once D21 is decided.
+
+### 🟡 R-Z2. The doc hand-builds a socket protocol when XPC already provides most of it (§4.6 lines 444–474; §4.11 IPC table 811–826; §4.16 line 1028) *(returning: Z3)*
+- **What's wrong:** §4.6 now lists what the socket rebuilds, so the remaining distinct benefits are readability and a single wire format. Readability already needs `muninn debug send` for release builds. Meanwhile §4.16 marks launchd `Sockets` as "adopt", which assumes the socket wins before PROOF-002 decides.
+- **Suggestion:**
+  - Make XPC the default, and treat the socket as the alternative PROOF-002 must justify.
+  - Change the `Sockets` row to "proof (D21)".
+  - Drop `debug send` if XPC wins.
+
+### 🟡 R-Z3. The lock teardown is kept even though the doc says it protects against no in-scope threat (§4.4 lines 406–423, step 5 at 421; §1.1 line 74; PROOF-003 step 6) *(returning: C6)*
+- **What's wrong:** on every lock, step 5 closes connections, zeroizes keys, enables SQLCipher memory security, drops caches, and reopens everything on unlock. The doc itself says this only helps against an out-of-scope threat.
+- **Why it matters:** the reopen path on unlock can race with in-flight jobs, the capture queue and the reader pool.
+- **Suggestion:**
+  - Keep steps 1–4.
+  - Move step 5 to D25.
+  - Drop PROOF-003 step 6.
+
+### 🟡 R-Z4. `transform` is a product feature, not platform work (§4.11 line 731, row 785; §4.1 line 201 `MuninnTransform`; line 807; D11; line 620) *(new)*
+- **What's wrong:** D1 says product features beyond the platform are not yet scoped. Even so, v2 adds:
+  - a module
+  - a command with 10 formats
+  - `--copy` capture semantics
+  - a scope row
+
+  No v2 goal mentions it, and the doc's reason ("the panel can reuse it later") is speculative.
+- **Why it matters:** it adds public surface under a contract where any change is a breaking change. It also duplicates `jq`, `base64` and `tr` on the output of `muninn paste`.
+- **Suggestion:** remove `transform` and `MuninnTransform` from v2, and fold the idea into D1.
+
+### 🟡 R-Z5. "As of" cursor paging for `list` brings its own index and proof for a need no one has named (§4.7 lines 523–536; PROOF-007; §4.11 line 724) *(returning: Z6/C5)*
+- **What's wrong:** `search` drops cursors until "real use shows a need", but `list` keeps:
+  - cursors
+  - a composite index
+  - an `invalid_cursor` error
+  - half of PROOF-007
+
+  No consumer is named: the panel uses subscriptions, `--all` covers scripts, and scripts have no access in v2 anyway (D27).
+- **Suggestion:** use `--limit` plus a streamed `--all` for `list` too, and drop `--cursor`, `nextCursor` and the cursor half of PROOF-007.
+
+### 🟡 R-Z6. Two FTS indexes, a heuristic query planner and rank fusion are built before any evidence that one index isn't enough (§4.7 lines 480–499, 515–521) *(new)*
+- **What's wrong:**
+  - The design maintains `unicode61` and `trigram` indexes, with planner rules (non-word characters, camelCase/snake_case, "fewer than one page") and reciprocal-rank fusion.
+  - Trigram index size is already a worry (D16).
+  - The simpler baseline is never tested: trigram only with `remove_diacritics`, plus a `LIKE`/prefix fallback for terms under 3 characters.
+- **Suggestion:**
+  - Add a trigram-only baseline to PROOF-004.
+  - Adopt two indexes plus fusion only if the baseline fails specific relevance cases.
+  - Replace the planner rules with a sentence of intent.
+
+### 🟡 R-Z7. The access-policy surface is larger than an interactive-only v2 needs (§4.12 lines 838–862; §1.1 line 72; D27) *(returning: Z4 override)*
+- **What's wrong:** with automation deferred, every v2 CLI caller is a person at a terminal who has already passed Touch ID. The doc still has:
+  - five scope tiers
+  - per-scope default and ceiling lifetimes
+  - `metadata`'s special rule (filter-only searches allowed, text queries refused)
+  - `status --audit` gated on `metadata`
+
+  No v2 consumer of `metadata` is named.
+- **Suggestion:** write down the one v2 user story that `metadata` serves. If there isn't one, collapse to `read` (which includes `manage`) plus per-request `protected`.
+
+### 🟢 R-Z8. The TIFF pixel-match dedupe rule contradicts the memory and read rules (§4.3 line 334 vs. §4.13 line 899, §4.14 line 929) *(new)*
+A pixel compare needs both images fully decoded in the helper, which line 899 forbids, and line 929 says TIFF isn't read at all when a compact format exists. Delete the pixel-compare rule.
+
+### 🟢 R-Z9. The content hash covers every representation, so "the same thing" may not dedupe (§4.3 line 326 vs. line 383) *(new)*
+The same text copied from a browser (plain plus HTML) and from a terminal (plain only) becomes two items. Say whether that is intended. If not, define identity by the primary representation.
+
+### 🟢 R-Z10. Placeholders with no v2 consumer (lines 635, 305, 1125) *(new)*
+- Tier 2 "light text work" is "none in v2": drop the row.
+- `saved_items.label` and the saved-vs-pinned split have no command that uses them: reduce to the pin, or fold `is_pinned` into `content_items`.
+- The glossary still defines "Automation grant": remove it, or point it to D27 only.
+
+### 🟢 R-Z11. `MuninnCore` is described as "no I/O", but pasteboard writing needs a home (§4.1 line 193; §4.8 lines 618–620) *(new)*
+v1's `packages/MuninnCore/Sources/ClipboardWriter.swift` writes to `NSPasteboard` from `MuninnCore`, and v1's marker is empty `Data`, while v2's marker carries the item id. Name the module that owns pasteboard writes (probably `MuninnCapture`), and list `ClipboardWriter` as reused and moved.
+
+### 🟢 R-Z12. A malformed MetricKit row in §4.16 (line 1040) *(new)*
+The row has 5 cells in a 4-column table. The extra cell ("Feeds `doctor`…") is left over from before D31 was revised and contradicts "not in v2".
+
+---
+
+## Inventive catalyst reviewer (round 2)
+
+### 🟡 R-C1. The key stays readable while the Mac is locked, but nothing needs it then (§1.1 line 74; §4.4 lines 389, 404–424; D25) *(related: C6)*
+- **False compromise:** the doc picks `AfterFirstUnlockThisDeviceOnly` so the helper can run in the background. But while the Mac is locked, the design already pauses capture, stops jobs and serves no data. And because the helper starts at login, it always starts while the Mac is unlocked.
+- **Transform (Blessing in Disguise):** extend PROOF-003 step 3 to test `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` in the data-protection keychain. Does it actually become unreadable when the screen locks, on both Apple silicon and Intel? If it does, the OS enforces "no data while locked", and the policy gate becomes the defense in depth. That needs no D25 prompt.
+- **Side costs:**
+  - The design must tell `errSecInteractionNotAllowed` apart from `errSecItemNotFound`. Otherwise a crash restart while locked would trigger the orphan path and move the DB aside (lines 398–402). This needs its own test.
+  - The helper gains a "wait for unlock" state at startup.
+  - The behavior may vary across hardware and OS versions.
+  - If macOS doesn't honor the class on screen lock, the current design stands.
+
+### 🟡 R-C2. The asset store choice is framed as only two options: "one big file" or "an external envelope store" (§4.3 lines 345–361; §4.16 line 1044; D15; PROOF-005) *(related: Z2/C1)*
+- **False compromise:** each capture changes the DB, and binaries are kept permanently (D18). So Time Machine re-copies a file of many GB every hour, and pre-migration and orphan copies duplicate the same large file.
+- **Transform (Segmentation):** a middle option. Store assets in additional SQLCipher shard files, opened with `ATTACH` under the same key:
+  - The main DB holds metadata, text and FTS, plus a "hot" shard that receives new assets.
+  - Shards are sealed by size or period.
+  - Backup and vacuum then work shard by shard.
+  - `assets.storage` gains a shard id.
+
+  PROOF-005 would measure this option alongside the other two.
+- **Side costs:**
+  - Commits that span attached DBs are **not atomic** in WAL mode. Writes need an order (chunks first, then the reference) plus a startup sweep, which brings back a small part of the reconciliation that inline storage avoided.
+  - More files and connections.
+  - A delete re-dirties a sealed shard.
+
+### 🟡 R-C3. "No single copy can exhaust memory" doesn't match "peak memory follows the payload" (invariants 9–10, lines 93–94; §4.8 625–628; §4.13 891; §4.14 917, 928–930; line 702) *(new)*
+- **False compromise:** macOS doesn't expose a representation's size until it is read. So the per-representation size limit is checked only after a 2 GB copy is already in the always-running helper. Invariant 10 is stated without that caveat.
+- **Transform (Extraction):**
+  - Read large or non-text representations in a short-lived process.
+  - Cheap size checks (`types`, file-URL `stat`, `detectMetadata`) still run first, in the helper.
+  - This depends on whether that process can read the pasteboard under the existing grant. Add that question to PROOF-001 step 4.
+  - If it can't, restate invariant 10 honestly: the bound holds after the read. Then record the measured peak in PROOF-008 or PROOF-015.
+- **Side costs:**
+  - Extra latency for large captures, against the ~100 ms screenshot target.
+  - A possible second permission identity to onboard.
+  - Another IPC channel to authenticate.
+
+### 🟡 R-C4. Invariant 5 promises complete deletion, but the storage engine keeps traces (line 89; §4.3 365–369; line 353; line 378; line 400; §4.7) *(new)*
+- **False compromise:** after the delete commits, deleted content still exists as ciphertext in:
+  - freed pages (when `secure_delete` is off)
+  - the WAL until a checkpoint
+  - old FTS5 segments until a merge
+  - the `pre-<version>` and `orphaned-<date>` DB copies
+
+  The at-rest threat model still holds, but "deletion is complete" claims more than that.
+- **Transform (Beforehand Cushioning):**
+  - Turn on `PRAGMA secure_delete` (or `FAST`).
+  - Run a `TRUNCATE` checkpoint after user deletes.
+  - Schedule an FTS5 `merge`/`optimize` through the existing background scheduler.
+  - Cover the DB copies in the user-facing deletion story.
+  - Restate invariant 5 as: unreachable at commit, physically purged within a stated bound.
+- **Side costs:** write and battery cost from `secure_delete`, the CPU cost of merges, a latency spike at checkpoint, and a weaker "eventual" wording.
+
+### 🟡 R-C5. Fixed polling treats missed clipboard changes as an unavoidable loss, when the interval could adapt (goal 2 line 32; §4.8 604–614; §2 line 101; D6) *(new)*
+- **False compromise:** polling itself is a platform limit, but the interval isn't. §4.8 never states the interval, and D6 only says "revisit". Checking `changeCount` is cheap and reads no content.
+- **Transform (Dynamics):**
+  - Poll tightly (50–100 ms) for a short window after a change, a hotkey, or a change of frontmost app.
+  - Relax when idle, in Low Power Mode, or under thermal pressure.
+  - Use `missedChanges` as the feedback signal.
+  - Let the flood limiter override tight polling.
+  - PROOF-008 compares fixed and adaptive intervals.
+- **Side costs:** capture tests need fake clocks, and there are more wake-ups while the user is actively copying.
+
+### 🟢 R-C6. Inspectability is counted as a reason for the socket, but it belongs to `debug send` (§4.6 lines 448–456, 474; D21; PROOF-002) *(returning: Z3)*
+`debug send` could encode and decode JSON over XPC just as well. Drop inspectability from the PROOF-002 comparison, and specify `debug send` as JSON on stdio whatever the transport. Side cost: dev builds lose `socat` as a way in.
+
+### 🟢 R-C7. D30 sets up a trade-off between capture latency and searchability that probably doesn't exist (§4.8 line 638; D30; PROOF-008) *(new)*
+- The after-commit `index` step runs right after commit, in the same process. Against the < 1 s target, that gap is almost certainly milliseconds.
+- **Suggestion:** fix "after commit" as the design, and have PROOF-008 report only the measured capture-to-searchable time. If that ever misses, a fallback is a direct scan of items whose `index` step is still pending. That scan must respect invariant 7: same results whichever path serves them.
+
+### Checked and not a false compromise
+- Inheriting the terminal session (the `sudo`-like trade-off).
+- Polling as such (D6).
+- The backpressure memory bound.
+- Flood handling that depends on attribution confidence.
+- The three-tier processing split.
+- Shipping v2 without automation access (D27).
+
+---
+
+## Maintainer classification (round 2)
+
+Classified 2026-11-09. Maintainer decisions: alternatives live in `decisions.md`; the `metadata` scope is kept, with a user story; `transform` is deferred to D1; the minimum is macOS 27. The other classifications follow Stage 8's sorting, and the resolution rule was that a design-doc change must remove at least as much text as it adds, unless it fixes a contradiction or an invariant. The design went from 1,128 to about 877 lines.
+
+| ID | Class | Resolution |
+|---|---|---|
+| R-Z1 | Valid | Wire-protocol detail removed from §4.6 (now intent plus requirements); abuse fixtures moved to PROOF-015; the app-as-reader fallback cut to a few lines in §4.16. The onboarding flow stays, because it's a gate A deliverable. |
+| R-Z2 | Valid | XPC is the default; a socket must earn its place in PROOF-002 (D21). |
+| R-Z3 | Valid | Lock teardown (close DB, wipe keys) removed from v2; it's covered by D25. |
+| R-Z4 | Valid (maintainer) | `transform` deferred to D1 (D11). |
+| R-Z5 | Valid | `list` cursors removed; `--limit` plus streamed `--all`. |
+| R-Z6 | Valid | A trigram-only baseline comes first in PROOF-004; two indexes only if it fails (D35). |
+| R-Z7 | Disputed (maintainer) | `metadata` kept; the user story is written in §4.12. |
+| R-Z8 | Valid | Pixel-compare rule removed; type-based rule instead. |
+| R-Z9 | Valid | Text identity is the plain text; representations are append-only (§4.3). |
+| R-Z10 | Valid | Tier-2 row removed; "saved" dropped in favor of pinned only (D37); automation-grant glossary entry removed. |
+| R-Z11 | Valid | `ClipboardWriter` and the marker move to `MuninnCapture`; listed as reused. |
+| R-Z12 | Valid | MetricKit row removed. |
+| R-C1 | Needs proof | PROOF-003 tests `WhenUnlocked`, including the locked-restart vs. missing-key distinction. |
+| R-C2 | Deferred | Shards only if PROOF-005 shows the single-file cost is unacceptable **and** Time Machine exclusion (D34) doesn't fix it (D15). |
+| R-C3 | Valid in part | Invariant 10 restated; the peak is measured in PROOF-001 step 7. The short-lived reader is rejected unless that measurement fails. |
+| R-C4 | Valid | Invariant 5 now says unreachable at commit, purged within a bounded time; `secure_delete`, a checkpoint and index merges added; the DB copies are covered. |
+| R-C5 | Deferred | Adaptive polling waits for `missedChanges` data (D6). |
+| R-C6 | Valid | Inspectability comes from `muninn debug send` over any transport. |
+| R-C7 | Valid | D30 closed: index right after commit. |
