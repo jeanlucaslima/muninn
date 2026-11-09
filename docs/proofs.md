@@ -50,21 +50,21 @@ We don't use a theorem prover for the system. It can't prove how macOS pasteboar
 | ID | Claim | Level | Gate | Decides | Status |
 |---|---|---|---|---|---|
 | PROOF-001 | Signed app + helper can get persistent pasteboard access with clear attribution; CLI ↔ helper communication works | L2 | A | D23, onboarding (§4.16) | Proposed |
-| PROOF-002 | IPC caller identity: signed app and CLI accepted, everything else rejected; terminal binding comes from the kernel | L2 | A | D21, §4.6, §4.12 binding | Proposed |
+| PROOF-002 | IPC caller identity: signed app and CLI accepted, everything else rejected; terminal binding comes from the kernel; **socket vs. XPC compared on reliability and implementation cost** | L2 | A | D21, §4.6, §4.12 binding | Proposed |
 | PROOF-003 | Keychain lifecycle: private access group, behavior across lock/unlock/restart, missing-key handling, lock signals for an agent | L2 | A | D3, §4.4 | Proposed |
 | PROOF-004 | SQLCipher + FTS5 (word + trigram) from the exact package: encrypted, correct, fast enough at 100k | L1–L3 | A | D2, D16, §4.7 | Proposed |
-| PROOF-005 | Asset storage: encrypted BLOB vs. chunked external files, a threshold, and bounded memory | L3 | B | D15 | Proposed |
-| PROOF-006 | Access policy holds against a scripted signed CLI: scopes, sessions, protected items, no counting leaks | L2 | B | §4.12 | Proposed |
-| PROOF-007 | Pagination is duplicate-free under concurrent captures, deletions and reprocessing | L1–L2 | B | §4.7 | Proposed |
-| PROOF-008 | Capture guarantees: gap detection, backpressure, no capture-path stalls | L2–L3 | B | §4.8 | Proposed |
+| PROOF-005 | Chunked assets **inside** SQLCipher: size, latency, WAL behavior, vacuum, backup and restore cost, bounded memory, chunk size. Decides whether an external store is ever needed. | L3 | B | D15 | Proposed |
+| PROOF-006 | Access policy holds against a scripted signed CLI: every scope × command, `metadata` refuses text queries, protected items excluded without leaking counts, sessions bound to a terminal | L2 | B | §4.12 | Proposed |
+| PROOF-007 | `list` "as of" pagination never duplicates or skips under concurrent captures, re-captures, deletions and reprocessing; `search --all` is stable within one read transaction | L1–L2 | B | §4.7 | Proposed |
+| PROOF-008 | Capture guarantees: gap detection, coalescing, backpressure bounds, self-copy recorded once, capture-path targets; cost of indexing small text inside the capture transaction | L2–L3 | B | §4.8, D30 | Proposed |
 | PROOF-009 | Helper memory baseline and scale independence (100 vs. 100k items) | L3 | B | §4.13 budgets | Proposed |
 | PROOF-010 | Migration of a **copy** of a real v1 DB: hashes, timestamps, pins, duplicates preserved; failure leaves v1 untouched | L2 | C | §5 | Proposed |
-| PROOF-011 | Session lock: DB closed, keys wiped, sessions ended, clean resume, on a release-signed build | L2 | C | §4.4 | Proposed |
-| PROOF-012 | Restart and crash recovery: helper killed at every capture step, no lost or duplicated history, assets reconciled | L2 | C | §4.3, §4.8 | Proposed |
+| PROOF-011 | Session lock: no data served while locked, sessions ended, clean resume, on a release-signed build. Key-buffer wiping is checked as defense in depth. | L2 | C | §4.4 | Proposed |
+| PROOF-012 | Restart and crash recovery: helper killed at every capture step; no lost or duplicated history; assets complete or absent, never partial | L2 | C | §4.3, §4.8 | Proposed |
 | PROOF-013 | Worker isolation: deliberately crashing OCR/PDF jobs; the helper survives, jobs are recoverable or quarantined, memory returns | L2–L3 | D | D17 | Proposed |
 | PROOF-014 | Processing idempotency under fault injection | L1–L2 | D | §4.8 | Proposed |
-| PROOF-015 | Abuse suite: floods, giant payloads, crafted files, IPC floods stay within limits and are labeled | L2–L3 | D | §4.14 | Proposed |
-| PROOF-016 | 30-day memory soak; MetricKit usefulness on macOS | L3 | D | §4.13, §4.16 | Proposed |
+| PROOF-015 | Abuse suite: floods (high- and low-confidence attribution modes), giant payloads, crafted files, IPC floods stay within limits and are labeled | L2–L3 | D | §4.14 | Proposed |
+| PROOF-016 | 30-day memory soak: no upward trend in idle footprint | L3 | D | §4.13 | Proposed |
 | PROOF-017 | Secure Enclave wrapping: real benefit and unattended unlock | L2 | — | D22 | Deferred |
 
 ---
@@ -110,13 +110,13 @@ We don't use a theorem prover for the system. It can't prove how macOS pasteboar
 - a Python client
 - the signed CLI run from a terminal, from `launchd`/cron, under `script`, from a child process of an authorized terminal, and with its binary copied and modified (signature broken)
 
-Also compare with an XPC Mach-service variant using `xpc_connection_set_peer_code_signing_requirement` (D21).
+Also build an **XPC Mach-service variant** using `xpc_connection_set_peer_code_signing_requirement` (D21), with the same capabilities: identity check, concurrent requests with cancellation, a streamed binary payload (and `SCM_RIGHTS` file-descriptor passing on the socket), and an event subscription. Record the **lines of code and moving parts** for each, not just whether it works.
 
 **Acceptance.**
 - Every non-Muninn client is rejected before any request is read.
 - The signed clients are accepted.
 - Terminal and audit-session info matches reality for every launch context, including the cases we accept as limitations (child of an authorized terminal).
-- The socket approach is at least as reliable as the XPC variant, or D21 is revisited.
+- **D21 is decided on evidence:** the socket stays only if it's as reliable as XPC and its extra implementation cost is justified by concrete needs (inspectability, one wire format). Otherwise, switch to XPC.
 
 **Evidence required.** A per-client decision log, the kernel-derived TTY/session values per launch context, signing details for each binary, release-signed run.
 

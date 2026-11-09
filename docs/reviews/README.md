@@ -2,7 +2,7 @@
 
 Records of design reviews: findings from fresh-context (Goldfish) reviewers, and how each was resolved.
 
-**One file per review:** `YYYY-MM-DD-<scope>.md`. For example, `2026-11-09-v2-architecture.md`.
+**One file or folder per review.** EGM writes its output to `docs/reviews/egm-YYYY-MM-DD/` (e.g. `zoom_out_report.md`), and we keep it as is. Hand-written reviews use `YYYY-MM-DD-<scope>.md`. Either way, the maintainer's classification is appended to the report itself.
 
 Each file contains:
 1. **Scope and inputs:** the document and revision reviewed, which source material reviewers received, and what they did **not** receive (e.g. "no design conversation").
