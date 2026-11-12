@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Muninn",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("27.0")], // D5
     products: [
         .executable(name: "muninnd", targets: ["muninnd"]),
         .executable(name: "muninn", targets: ["muninn-cli"]),

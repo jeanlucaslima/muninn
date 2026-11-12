@@ -39,7 +39,7 @@ struct PanelContentView: View {
                             }
                         }
                     }
-                    .onChange(of: viewModel.selectedIndex) { newIndex in
+                    .onChange(of: viewModel.selectedIndex) {
                         if let entry = viewModel.selectedEntry {
                             proxy.scrollTo(entry.id, anchor: .center)
                         }

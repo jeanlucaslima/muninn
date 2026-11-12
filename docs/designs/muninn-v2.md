@@ -124,7 +124,7 @@ NSPasteboard ──poll 0.5s──► ClipboardWatcher ─► ClipboardStore ─
 | Search | `content LIKE '%q%'`: unranked, no index use. |
 | Background | Menu bar app launches `muninnd run` as a child `Process` and restarts it on exit. `SMAppService.mainApp` only for the app's own launch at login. |
 | IPC | `AF_UNIX` socket at `~/Library/Application Support/Muninn/muninn.sock`. No peer authentication; no explicit socket permissions. |
-| Testing | Swift Testing: store, IPC, and CLI (spawns real processes). 48 tests. No UI tests. |
+| Testing | Swift Testing: store, IPC, and CLI (spawns real processes). 100 tests (42 store, 10 IPC, 48 CLI). No UI tests. The CLI tests point the CLI at a mock server through `MUNINN_SOCKET_PATH`, read only in `DEBUG` builds; that seam goes with the v1 socket in gate B. |
 | Distribution | README describes `Muninn.app`, but the repo has no bundling, signing or notarization pipeline. |
 
 **Reused from v1, not rewritten:**
@@ -839,7 +839,7 @@ v2 is delivered through **four evidence gates**. Each ends with a **working syst
 
 | Gate | Goal | Must be demonstrated | Proofs |
 |---|---|---|---|
-| ✅ 0 | Toolchain | Swift 6.4, Swift Build, import checks | — |
+| ✅ 0 | Toolchain | Swift 6.4, Swift Build, import checks (`swift build --explicit-target-dependency-import-check error` passes; there's no CI yet, so nothing runs it automatically until gate B adds CI) | — |
 | **A** | **Platform feasibility** | With throwaway spikes on the minimum OS, one **layout matrix**: helper location × which process reads the pasteboard × worker launch × Keychain group × referenced-file access, plus caller identity and SQLCipher search | 001 pasteboard access and layout · 002 caller identity, session binding, transport · 003 Keychain and lock · 004 encrypted search and index shape |
 | **B** | **Secure minimum engine** | Encrypted capture through an **injected `PasteboardSource`** (L1); storage v2 with chunked assets; `SearchService`; the CLI and its contract; the access policy enforced with the scripted approver (L1); the chosen IPC transport; dev-build isolation; concurrency conventions. No UI, no file processing. | 005 asset storage at size · 006 policy vs. a scripted CLI · 007 `--all` stability and stream limits · 008 capture guarantees · 009 memory baseline |
 | **C** | **Migration and daily use** | The restructure in §4.1; real pasteboard capture in the signed bundle; onboarding; the real approval prompt; panel, hotkey and icon modes; session lock; restart and crash recovery; release-signed nightly run; v1 migration | 010 migration of a v1 copy · 011 lock behavior · 012 crash recovery |

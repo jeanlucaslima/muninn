@@ -16,8 +16,14 @@ public enum MuninnPaths {
     }
 
     public static var socketPath: String {
-        ProcessInfo.processInfo.environment["MUNINN_SOCKET_PATH"]
-            ?? "\(applicationSupportDir)/muninn.sock"
+        #if DEBUG
+        // Test seam for the v1 CLI process tests; compiled out of release builds.
+        // Removed with the v1 socket transport in gate B (design §2).
+        if let override = ProcessInfo.processInfo.environment["MUNINN_SOCKET_PATH"] {
+            return override
+        }
+        #endif
+        return "\(applicationSupportDir)/muninn.sock"
     }
 
     public static func ensureDirectoryExists() throws {
