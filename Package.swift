@@ -45,7 +45,7 @@ let package = Package(
         // Executables
         .executableTarget(
             name: "muninnd",
-            dependencies: ["MuninnCore", "MuninnStore", "MuninnClipboard", "MuninnIPC"],
+            dependencies: ["MuninnCore", "MuninnStore", "MuninnSearch", "MuninnClipboard", "MuninnIPC"],
             path: "apps/muninnd/Sources"
         ),
         .executableTarget(
@@ -72,8 +72,18 @@ let package = Package(
             path: "packages/MuninnSearch/Tests"
         ),
         .testTarget(
+            name: "MuninnClipboardTests",
+            dependencies: ["MuninnClipboard", "MuninnCore"],
+            path: "packages/MuninnClipboard/Tests"
+        ),
+        .testTarget(
+            name: "MuninndTests",
+            dependencies: ["muninnd", "MuninnCore", "MuninnStore", "MuninnSearch"],
+            path: "apps/muninnd/Tests"
+        ),
+        .testTarget(
             name: "MuninnIPCTests",
-            dependencies: ["MuninnIPC"],
+            dependencies: ["MuninnIPC", "MuninnCore"],
             path: "packages/MuninnIPC/Tests"
         ),
         .testTarget(

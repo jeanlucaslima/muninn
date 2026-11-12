@@ -2,320 +2,329 @@ import Foundation
 import MuninnCore
 import MuninnIPC
 
-// MARK: - Argument Parsing
+// muninn: the CLI (design §4.11). Contract:
+// - stdout carries only the successful result; errors go to stderr.
+// - With --json, results carry `schemaVersion`; errors are
+//   {"schemaVersion":1,"error":{"code","message"}} on stderr, stdout empty.
+// - Exit codes: 0 ok · 1 usage · 2 not found · 3 helper unreachable ·
+//   7 internal · 8 incompatible helper · 9 helper busy.
+// Not yet: sessions and scopes (§4.12), paste, open, doctor, debug send.
 
-let args = Array(CommandLine.arguments.dropFirst())
-let command = args.first ?? "help"
+let cliVersion = "2.0.0-dev"
 
-func parseFlag(_ flag: String) -> String? {
-    guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
-    return args[index + 1]
-}
+let usage = """
+    muninn: clipboard memory
 
-func hasFlag(_ flag: String) -> Bool {
-    args.contains(flag)
-}
+    Usage:
+      muninn status
+      muninn list [--limit N | --all]
+      muninn search [<query>] [--app <name|bundle-id>] [--type <kind|uti>] [--pinned]
+                    [--since <date>] [--until <date>] [--limit N | --all]
+      muninn history <id>
+      muninn get <id>
+      muninn copy <id>
+      muninn pin <id> | unpin <id> | delete <id>
+      muninn pause | resume
+      muninn help | --version
 
-// MARK: - Preview
+    Global flags: --json, --width <cols>
+    Kinds: text, rich_text, html, image, pdf, file, other
+    Dates: 2026-11-12, 2026-11-12T09:30:00Z, or relative: 30m, 2h, 7d
+    """
 
-/// Collapse whitespace into a single line and truncate to maxWidth.
-func normalizePreview(_ content: String, maxWidth: Int) -> String {
-    let collapsed = content
-        .split(omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace || $0.isNewline })
-        .joined(separator: " ")
+// MARK: - Arguments
 
-    if collapsed.isEmpty {
-        return "(empty)"
-    }
+struct Arguments {
+    var command = "help"
+    var positional: [String] = []
+    var values: [String: String] = [:]
+    var switches: Set<String> = []
 
-    if collapsed.count <= maxWidth {
-        return collapsed
-    }
+    static let valueFlags: Set<String> = ["--limit", "--app", "--type", "--since", "--until", "--width"]
+    static let switchFlags: Set<String> = ["--json", "--all", "--pinned", "--version", "--help", "-h"]
 
-    return String(collapsed.prefix(maxWidth - 1)) + "\u{2026}"
-}
-
-// MARK: - Client
-
-func makeClient() -> IPCClient {
-    IPCClient(socketPath: MuninnPaths.socketPath)
-}
-
-func sendRequest(_ request: IPCRequest) -> Data {
-    let client = makeClient()
-    do {
-        return try client.send(request)
-    } catch {
-        if "\(error)".contains("Connection refused") || "\(error)".contains("No such file") {
-            fputs("muninnd is not running. Start it with: muninnd run\n", stderr)
-        } else {
-            fputs("error: \(error)\n", stderr)
+    init(_ raw: [String]) throws(UsageError) {
+        var rest = raw[...]
+        var sawCommand = false
+        while let arg = rest.popFirst() {
+            if arg == "--" {
+                positional += rest
+                break
+            } else if Self.valueFlags.contains(arg) {
+                guard let value = rest.popFirst() else { throw UsageError("\(arg) needs a value") }
+                values[arg] = value
+            } else if Self.switchFlags.contains(arg) {
+                switches.insert(arg)
+            } else if arg.hasPrefix("--") {
+                throw UsageError("unknown flag \(arg)")
+            } else if !sawCommand {
+                command = arg
+                sawCommand = true
+            } else {
+                positional.append(arg)
+            }
         }
-        exit(1)
     }
 }
 
-// MARK: - Response Helpers
-
-func decodeResponse<T: Codable & Sendable>(_ data: Data, as type: T.Type) -> T? {
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
-    guard let response = try? decoder.decode(IPCResponse<T>.self, from: data) else {
-        fputs("error: failed to decode response\n", stderr)
-        exit(1)
-    }
-    if !response.ok {
-        fputs("error: \(response.error ?? "unknown error")\n", stderr)
-        exit(1)
-    }
-    return response.data
+struct UsageError: Error {
+    let message: String
+    init(_ message: String) { self.message = message }
 }
 
-func printEntries(_ entries: [ClipboardEntry]) {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .short
+// MARK: - Output
 
-    let maxPreviewWidth = 80
-    let idWidth = entries.map { String($0.id).count }.max() ?? 1
+/// Decided before parsing, so even argument errors honor --json.
+let jsonMode = CommandLine.arguments.dropFirst().contains("--json")
 
-    for entry in entries {
-        let timestamp = formatter.string(from: entry.createdAt)
-        let normalized = normalizePreview(entry.displayContent, maxWidth: maxPreviewWidth)
-        let pinned = entry.isPinned ? " [pinned]" : ""
-        let idStr = String(entry.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
-        print("  #\(idStr)  \(timestamp)  \(normalized)\(pinned)")
+func writeStderr(_ text: String) {
+    FileHandle.standardError.write(Data(text.utf8))
+}
+
+/// Ends the process with an error on stderr, never stdout.
+func fail(_ exitCode: Int32, _ code: String, _ message: String) -> Never {
+    if jsonMode {
+        struct ErrorBody: Encodable { let code: String; let message: String }
+        struct ErrorOutput: Encodable { let schemaVersion: Int; let error: ErrorBody }
+        let output = ErrorOutput(schemaVersion: MuninnProtocol.cliSchemaVersion, error: ErrorBody(code: code, message: message))
+        let data = (try? MuninnJSON.encoder().encode(output)) ?? Data()
+        writeStderr(String(decoding: data, as: UTF8.self) + "\n")
+    } else {
+        writeStderr("muninn: \(message)\n")
+    }
+    exit(exitCode)
+}
+
+func usageFailure(_ message: String) -> Never {
+    fail(1, "usage", "\(message)\nRun 'muninn help' for usage.")
+}
+
+/// Adds `schemaVersion` next to the value's own keys.
+struct Versioned<T: Encodable>: Encodable {
+    let value: T
+    enum Key: String, CodingKey { case schemaVersion }
+    func encode(to encoder: Encoder) throws {
+        try value.encode(to: encoder)
+        var container = encoder.container(keyedBy: Key.self)
+        try container.encode(MuninnProtocol.cliSchemaVersion, forKey: .schemaVersion)
+    }
+}
+
+func printJSON<T: Encodable>(_ value: T) {
+    do {
+        let data = try MuninnJSON.encoder(pretty: true).encode(Versioned(value: value))
+        print(String(decoding: data, as: UTF8.self))
+    } catch {
+        fail(7, "internal", "could not encode output: \(error)")
+    }
+}
+
+// MARK: - Helper calls
+
+func call<P: Codable & Sendable, T: Codable & Sendable>(_ method: IPCMethod, _ params: P, as type: T.Type) -> T {
+    let response: IPCResponse<T>
+    do {
+        response = try IPCClient(socketPath: MuninnPaths.socketPath).call(method, params, as: T.self)
+    } catch {
+        fail(3, "helper_unreachable", "can't reach the Muninn helper. Is Muninn running?")
+    }
+    if let error = response.error {
+        fail(error.code.exitCode, error.code.rawValue, error.message)
+    }
+    guard let data = response.data else {
+        fail(7, "internal", "the helper sent an empty response")
+    }
+    return data
+}
+
+// MARK: - Parsing helpers
+
+func itemID(_ args: Arguments) -> Int64 {
+    guard args.positional.count == 1, let id = Int64(args.positional[0]), id > 0 else {
+        usageFailure("muninn \(args.command) needs one item id")
+    }
+    return id
+}
+
+func limit(_ args: Arguments) -> Int? {
+    if args.switches.contains("--all") {
+        if args.values["--limit"] != nil { usageFailure("use --limit or --all, not both") }
+        return nil
+    }
+    guard let raw = args.values["--limit"] else { return MuninnLimits.defaultResultLimit }
+    guard let n = Int(raw), n > 0 else { usageFailure("--limit must be a positive number") }
+    return n
+}
+
+/// ISO-8601 date or date-time, or relative to now: 30s, 15m, 2h, 7d.
+func parseDate(_ raw: String, flag: String) -> Date {
+    if let date = MuninnJSON.parseISO8601(raw) { return date }
+    if let day = try? Date(raw, strategy: Date.ISO8601FormatStyle(timeZone: .current).year().month().day()) {
+        return day
+    }
+    let units: [Character: Double] = ["s": 1, "m": 60, "h": 3600, "d": 86400]
+    if let unit = raw.last, let seconds = units[unit], let n = Double(raw.dropLast()), n >= 0 {
+        return Date().addingTimeInterval(-n * seconds)
+    }
+    usageFailure("\(flag): can't read '\(raw)' as a date")
+}
+
+// MARK: - Human output
+
+func terminalWidth(_ args: Arguments) -> Int {
+    if let raw = args.values["--width"] {
+        guard let n = Int(raw), n >= 20 else { usageFailure("--width must be at least 20") }
+        return n
+    }
+    var size = winsize()
+    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0, size.ws_col > 0 { return Int(size.ws_col) }
+    return 100
+}
+
+func oneLine(_ text: String) -> String {
+    text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+}
+
+/// Cuts at `width` characters and marks the cut with `…`.
+func cut(_ text: String, _ width: Int) -> String {
+    text.count <= width ? text : String(text.prefix(max(0, width - 1))) + "…"
+}
+
+func shortDate(_ date: Date) -> String {
+    date.formatted(date: .numeric, time: .shortened)
+}
+
+func describe(_ item: ItemSummary) -> String {
+    let content = item.preview.map(oneLine).flatMap { $0.isEmpty ? nil : $0 }
+    switch item.kind {
+    case .text: return content ?? "(empty)"
+    case .file: return "[file] " + (content ?? "")
+    default:
+        let size = item.byteSize.map { " " + ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
+        return content.map { "[\(item.kind.rawValue)] \($0)" } ?? "[\(item.kind.rawValue)\(size)]"
+    }
+}
+
+func printPage(_ page: ItemPage, _ args: Arguments) {
+    if page.items.isEmpty {
+        writeStderr("No items.\n")
+        return
+    }
+    let width = terminalWidth(args)
+    let idWidth = page.items.map { String($0.id).count }.max() ?? 1
+    for item in page.items {
+        let id = String(item.id).padding(toLength: idWidth, withPad: " ", startingAt: 0)
+        let pin = item.isPinned ? " 📌" : ""
+        let prefix = "#\(id)  \(shortDate(item.lastCapturedAt))  "
+        print(prefix + cut(describe(item), max(10, width - prefix.count - pin.count - 1)) + pin)
+    }
+    if page.hasMore {
+        writeStderr("showing \(page.items.count) of \(page.total); use --limit N or --all for more\n")
     }
 }
 
 // MARK: - Commands
 
-switch command {
+let args: Arguments
+do {
+    args = try Arguments(Array(CommandLine.arguments.dropFirst()))
+} catch {
+    usageFailure(error.message)
+}
+
+if args.switches.contains("--version") {
+    print("muninn \(cliVersion)")
+    exit(0)
+}
+if args.switches.contains("--help") || args.switches.contains("-h") {
+    print(usage)
+    exit(0)
+}
+
+func noPositional() {
+    if !args.positional.isEmpty { usageFailure("muninn \(args.command) takes no arguments") }
+}
+
+switch args.command {
+case "help":
+    print(usage)
+
+case "status":
+    noPositional()
+    let status = call(.status, NoParams(), as: StatusInfo.self)
+    if jsonMode { printJSON(status); break }
+    let c = status.counters
+    print("""
+        helper:    running\(status.isDevBuild ? " (dev build)" : ""), up \(status.uptimeSeconds)s
+        capture:   \(status.isPaused ? "paused" : "active")
+        items:     \(status.itemCount)
+        data:      \(status.dataDirectory)
+        counters:  observed \(c.observedChanges), missed \(c.missedChanges), dropped \(c.droppedBackpressure), \
+        too large \(c.omittedBySize), unsupported \(c.skippedUnsupported), self-copies \(c.selfCopies), \
+        store errors \(c.storeErrors)
+        """)
+
 case "list":
-    let limit: Int
-    if hasFlag("--all") {
-        limit = Int.max
-    } else {
-        limit = parseFlag("--limit").flatMap(Int.init) ?? 20
-    }
-    let offset = parseFlag("--offset").flatMap(Int.init) ?? 0
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(
-        method: "list",
-        params: .list(.init(limit: limit, offset: offset))
-    )
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let listData = decodeResponse(data, as: ListResponseData.self) else { exit(1) }
-
-        if listData.entries.isEmpty {
-            print("No clipboard entries yet.")
-        } else {
-            printEntries(listData.entries)
-            print("\n\(listData.total) total entries")
-        }
-    }
+    noPositional()
+    let page = call(.list, SearchRequest(limit: limit(args)), as: ItemPage.self)
+    if jsonMode { printJSON(page) } else { printPage(page, args) }
 
 case "search":
-    guard let query = args.dropFirst().first else {
-        fputs("usage: muninn search <query> [--limit N] [--json]\n", stderr)
-        exit(1)
+    var request = SearchRequest(limit: limit(args))
+    request.query = args.positional.isEmpty ? nil : args.positional.joined(separator: " ")
+    request.app = args.values["--app"]
+    request.type = args.values["--type"]
+    request.pinned = args.switches.contains("--pinned") ? true : nil
+    request.since = args.values["--since"].map { parseDate($0, flag: "--since") }
+    request.until = args.values["--until"].map { parseDate($0, flag: "--until") }
+    if let type = request.type, ItemKind(rawValue: type) == nil, !type.contains(".") {
+        usageFailure("--type takes a kind (\(ItemKind.allCases.map(\.rawValue).joined(separator: ", "))) or a UTI")
     }
-    let limit = parseFlag("--limit").flatMap(Int.init) ?? 20
-    let jsonOutput = hasFlag("--json")
+    if request.query == nil, request.app == nil, request.type == nil, request.pinned == nil,
+       request.since == nil, request.until == nil {
+        usageFailure("muninn search needs a query or at least one filter")
+    }
+    let page = call(.search, request, as: ItemPage.self)
+    if jsonMode { printJSON(page) } else { printPage(page, args) }
 
-    let request = IPCRequest(
-        method: "search",
-        params: .search(.init(query: String(query), limit: limit))
-    )
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let searchData = decodeResponse(data, as: SearchResponseData.self) else { exit(1) }
-
-        if searchData.entries.isEmpty {
-            print("No entries matching \"\(query)\".")
-        } else {
-            printEntries(searchData.entries)
-            print("\n\(searchData.entries.count) matching entries")
-        }
+case "history":
+    let history = call(.history, ItemIDParams(id: itemID(args)), as: HistoryInfo.self)
+    if jsonMode { printJSON(history); break }
+    for event in history.events {
+        let source = event.source.name ?? event.source.bundleID ?? "unknown app"
+        print("\(shortDate(event.capturedAt))  \(source) (\(event.source.confidence.rawValue))")
     }
 
 case "get":
-    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn get <id> [--json]\n", stderr)
-        exit(1)
-    }
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "get", params: .get(.init(id: id)))
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
+    let detail = call(.get, ItemIDParams(id: itemID(args)), as: ItemDetail.self)
+    if jsonMode { printJSON(detail); break }
+    if let text = detail.text {
+        // Exact content, never truncated, no newline added.
+        FileHandle.standardOutput.write(Data(text.utf8))
     } else {
-        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-        if entry.kind == .text {
-            print(entry.content, terminator: "")
-        } else {
-            print(entry.displayContent)
+        print(describe(detail.summary))
+        for rep in detail.representations {
+            let size = rep.byteSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+            let state = rep.omitted.map { "omitted: \($0.rawValue)" } ?? rep.url ?? size ?? ""
+            print("  \(rep.uti)  \(rep.role.rawValue)  \(state)")
         }
     }
 
 case "copy":
-    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn copy <id> [--json]\n", stderr)
-        exit(1)
-    }
-    let jsonOutput = hasFlag("--json")
+    let ref = call(.copy, ItemIDParams(id: itemID(args)), as: ItemRef.self)
+    if jsonMode { printJSON(ref) } else { print("copied #\(ref.id)") }
 
-    let request = IPCRequest(method: "copy", params: .copy(.init(id: id)))
-    let data = sendRequest(request)
+case "pin", "unpin", "delete":
+    let method = IPCMethod(rawValue: args.command)!
+    let ref = call(method, ItemIDParams(id: itemID(args)), as: ItemRef.self)
+    let verb = ["pin": "pinned", "unpin": "unpinned", "delete": "deleted"][args.command]!
+    if jsonMode { printJSON(ref) } else { print("\(verb) #\(ref.id)") }
 
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-        print("copied #\(entry.id)")
-    }
-
-case "delete":
-    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn delete <id> [--json]\n", stderr)
-        exit(1)
-    }
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "delete", params: .delete(.init(id: id)))
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        _ = decodeResponse(data, as: [String: Int64].self)
-        print("deleted #\(id)")
-    }
-
-case "pin":
-    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn pin <id> [--json]\n", stderr)
-        exit(1)
-    }
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "pin", params: .pin(.init(id: id)))
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-        print("pinned #\(entry.id)")
-    }
-
-case "unpin":
-    guard let idStr = args.dropFirst().first, let id = Int64(idStr) else {
-        fputs("usage: muninn unpin <id> [--json]\n", stderr)
-        exit(1)
-    }
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "unpin", params: .unpin(.init(id: id)))
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let entry = decodeResponse(data, as: ClipboardEntry.self) else { exit(1) }
-        print("unpinned #\(entry.id)")
-    }
-
-case "pause":
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "pause", params: .pause)
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        _ = decodeResponse(data, as: [String: Bool].self)
-        print("clipboard watching paused")
-    }
-
-case "resume":
-    let jsonOutput = hasFlag("--json")
-
-    let request = IPCRequest(method: "resume", params: .resume)
-    let data = sendRequest(request)
-
-    if jsonOutput {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        _ = decodeResponse(data, as: [String: Bool].self)
-        print("clipboard watching resumed")
-    }
-
-case "status":
-    let request = IPCRequest(method: "status", params: .status)
-    let data = sendRequest(request)
-
-    if hasFlag("--json") {
-        print(String(data: data, encoding: .utf8) ?? "{}")
-    } else {
-        guard let status = decodeResponse(data, as: StatusResponseData.self) else { exit(1) }
-
-        let hours = status.uptimeSeconds / 3600
-        let minutes = (status.uptimeSeconds % 3600) / 60
-        let seconds = status.uptimeSeconds % 60
-
-        print("muninnd status:")
-        print("  running:  \(status.running)")
-        print("  paused:   \(status.isPaused)")
-        print("  entries:  \(status.entryCount)")
-        print("  uptime:   \(hours)h \(minutes)m \(seconds)s")
-        print("  database: \(status.dbPath)")
-    }
-
-case "help", "--help", "-h":
-    print("""
-    muninn — clipboard memory
-
-    Usage:
-      muninn list [--limit N] [--offset N] [--all] [--json]
-      muninn search <query> [--limit N] [--json]
-      muninn get <id> [--json]
-      muninn copy <id> [--json]
-      muninn delete <id> [--json]
-      muninn pin <id> [--json]
-      muninn unpin <id> [--json]
-      muninn pause [--json]
-      muninn resume [--json]
-      muninn status [--json]
-      muninn help
-
-    Commands:
-      list      List recent clipboard entries
-      search    Search entries by content
-      get       Show full content of an entry
-      copy      Restore entry to clipboard
-      delete    Remove entry from history
-      pin       Pin an entry
-      unpin     Unpin an entry
-      pause     Pause clipboard watching
-      resume    Resume clipboard watching
-      status    Show daemon status
-      help      Show this help
-    """)
+case "pause", "resume":
+    noPositional()
+    let state = call(IPCMethod(rawValue: args.command)!, NoParams(), as: PausedState.self)
+    if jsonMode { printJSON(state) } else { print(state.isPaused ? "capture paused" : "capture resumed") }
 
 default:
-    fputs("unknown command: \(command)\n", stderr)
-    fputs("run 'muninn help' for usage\n", stderr)
-    exit(1)
+    usageFailure("unknown command '\(args.command)'")
 }

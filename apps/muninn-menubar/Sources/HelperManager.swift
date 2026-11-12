@@ -33,38 +33,16 @@ final class HelperManager: ObservableObject {
 
     func waitForReady() async {
         let client = IPCClient(socketPath: MuninnPaths.socketPath)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
         let maxAttempts = 100 // 10 seconds at 100ms intervals
         for _ in 0..<maxAttempts {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-
-            let ready = await Task.detached {
-                do {
-                    let request = IPCRequest(method: "status", params: .status)
-                    let data = try client.send(request)
-                    let response = try decoder.decode(
-                        IPCResponse<StatusResponseData>.self,
-                        from: data
-                    )
-                    return response.ok
-                } catch {
-                    return false
-                }
-            }.value
-
-            if ready {
+            try? await Task.sleep(for: .milliseconds(100))
+            // A refused connection fails immediately, so this doesn't stall the main actor.
+            if (try? client.call(.hello, NoParams(), as: HelloInfo.self).get()) != nil {
                 status = .running
                 return
             }
         }
-
-        if process == nil || !(process?.isRunning ?? false) {
-            status = .failed
-        } else {
-            status = .failed
-        }
+        status = .failed
     }
 
     // MARK: - Private

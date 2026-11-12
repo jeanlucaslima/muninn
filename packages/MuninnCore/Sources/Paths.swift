@@ -1,14 +1,22 @@
 import Foundation
-import AppKit
 
 public enum MuninnPaths {
-    /// Pasteboard type used to mark clipboard writes made by Muninn itself.
-    /// The watcher checks for this to avoid recording self-generated changes.
-    public static let pasteboardMarkerType = NSPasteboard.PasteboardType("com.muninn.self-copy")
+    /// Pasteboard type Muninn adds to its own writes, carrying the item id (§4.8).
+    public static let selfCopyMarkerType = "com.muninn.self-copy"
+
+    /// Dev builds are isolated, not weakened (§4.1): a `DEBUG` build uses its
+    /// own data directory, decided at compile time.
+    #if DEBUG
+    public static let isDevBuild = true
+    private static let dataDirectoryName = "Muninn-Dev"
+    #else
+    public static let isDevBuild = false
+    private static let dataDirectoryName = "Muninn"
+    #endif
 
     public static var applicationSupportDir: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Library/Application Support/Muninn"
+        return "\(home)/Library/Application Support/\(dataDirectoryName)"
     }
 
     public static var databasePath: String {
@@ -17,8 +25,8 @@ public enum MuninnPaths {
 
     public static var socketPath: String {
         #if DEBUG
-        // Test seam for the v1 CLI process tests; compiled out of release builds.
-        // Removed with the v1 socket transport in gate B (design §2).
+        // Test seam for the CLI process tests; compiled out of release builds.
+        // Removed with the v1 socket transport (design §2).
         if let override = ProcessInfo.processInfo.environment["MUNINN_SOCKET_PATH"] {
             return override
         }
@@ -26,11 +34,14 @@ public enum MuninnPaths {
         return "\(applicationSupportDir)/muninn.sock"
     }
 
+    /// Creates the data directory and keeps Spotlight out of it (§4.16).
     public static func ensureDirectoryExists() throws {
-        try FileManager.default.createDirectory(
-            atPath: applicationSupportDir,
-            withIntermediateDirectories: true
-        )
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: applicationSupportDir, withIntermediateDirectories: true)
+        let marker = "\(applicationSupportDir)/.metadata_never_index"
+        if !fm.fileExists(atPath: marker) {
+            fm.createFile(atPath: marker, contents: Data())
+        }
     }
 
     // MARK: - Bundled Executables

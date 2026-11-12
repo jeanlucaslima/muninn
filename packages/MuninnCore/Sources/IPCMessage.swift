@@ -1,184 +1,75 @@
 import Foundation
 
-// MARK: - Request
+// v2 IPC messages (design §4.6, §4.11). One JSON request per connection:
+//   {"method": "<name>", "params": {...}}
+// and one JSON response:
+//   {"ok": true, "data": {...}}  or  {"ok": false, "error": {"code": "...", "message": "..."}}
+// The transport is still v1's Unix socket until D21 / PROOF-002 decide.
 
-public struct IPCRequest: Codable, Sendable {
+public enum MuninnProtocol {
+    /// Bumped on any incompatible message change; `hello` reports it.
+    public static let version = 2
+    /// `schemaVersion` carried by every CLI `--json` output.
+    public static let cliSchemaVersion = 1
+}
+
+public enum IPCMethod: String, Codable, Sendable, CaseIterable {
+    case hello, status, list, search, get, history, copy, pause, resume, pin, unpin, delete
+}
+
+public struct IPCRequest<Params: Codable & Sendable>: Codable, Sendable {
     public let method: String
-    public let params: IPCParams
+    public let params: Params
 
-    public init(method: String, params: IPCParams) {
-        self.method = method
+    public init(_ method: IPCMethod, _ params: Params) {
+        self.method = method.rawValue
         self.params = params
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case method, params
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        method = try container.decode(String.self, forKey: .method)
-        switch method {
-        case "list":
-            params = .list(try container.decode(IPCParams.ListParams.self, forKey: .params))
-        case "get":
-            params = .get(try container.decode(IPCParams.GetParams.self, forKey: .params))
-        case "search":
-            params = .search(try container.decode(IPCParams.SearchParams.self, forKey: .params))
-        case "copy":
-            params = .copy(try container.decode(IPCParams.CopyParams.self, forKey: .params))
-        case "delete":
-            params = .delete(try container.decode(IPCParams.DeleteParams.self, forKey: .params))
-        case "pin":
-            params = .pin(try container.decode(IPCParams.PinParams.self, forKey: .params))
-        case "unpin":
-            params = .unpin(try container.decode(IPCParams.UnpinParams.self, forKey: .params))
-        case "status":
-            params = .status
-        case "pause":
-            params = .pause
-        case "resume":
-            params = .resume
-        default:
-            params = .empty
-        }
     }
 }
 
-public enum IPCParams: Codable, Sendable {
-    case list(ListParams)
-    case get(GetParams)
-    case search(SearchParams)
-    case copy(CopyParams)
-    case delete(DeleteParams)
-    case pin(PinParams)
-    case unpin(UnpinParams)
-    case status
-    case pause
-    case resume
-    case empty
+/// Decodes just the method name, before the params type is known.
+public struct IPCRequestHeader: Decodable, Sendable {
+    public let method: String
+}
 
-    public struct ListParams: Codable, Sendable {
-        public let limit: Int?
-        public let offset: Int?
+public struct NoParams: Codable, Sendable, Equatable {
+    public init() {}
+}
 
-        public init(limit: Int? = nil, offset: Int? = nil) {
-            self.limit = limit
-            self.offset = offset
-        }
-    }
-
-    public struct GetParams: Codable, Sendable {
-        public let id: Int64
-
-        public init(id: Int64) {
-            self.id = id
-        }
-    }
-
-    public struct SearchParams: Codable, Sendable {
-        public let query: String
-        public let limit: Int?
-
-        public init(query: String, limit: Int? = nil) {
-            self.query = query
-            self.limit = limit
-        }
-    }
-
-    public struct CopyParams: Codable, Sendable {
-        public let id: Int64
-
-        public init(id: Int64) {
-            self.id = id
-        }
-    }
-
-    public struct DeleteParams: Codable, Sendable {
-        public let id: Int64
-
-        public init(id: Int64) {
-            self.id = id
-        }
-    }
-
-    public struct PinParams: Codable, Sendable {
-        public let id: Int64
-
-        public init(id: Int64) {
-            self.id = id
-        }
-    }
-
-    public struct UnpinParams: Codable, Sendable {
-        public let id: Int64
-
-        public init(id: Int64) {
-            self.id = id
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .list(let params):
-            try container.encode(params)
-        case .get(let params):
-            try container.encode(params)
-        case .search(let params):
-            try container.encode(params)
-        case .copy(let params):
-            try container.encode(params)
-        case .delete(let params):
-            try container.encode(params)
-        case .pin(let params):
-            try container.encode(params)
-        case .unpin(let params):
-            try container.encode(params)
-        case .status, .pause, .resume, .empty:
-            try container.encode([String: String]())
-        }
-    }
-
-    public init(from decoder: Decoder) throws {
-        // Standalone decoding fallback (prefer IPCRequest's method-aware decoding)
-        let container = try decoder.singleValueContainer()
-        if let getParams = try? container.decode(GetParams.self) {
-            self = .get(getParams)
-        } else if let listParams = try? container.decode(ListParams.self),
-           (listParams.limit != nil || listParams.offset != nil) {
-            self = .list(listParams)
-        } else {
-            self = .empty
-        }
-    }
+public struct ItemIDParams: Codable, Sendable, Equatable {
+    public let id: Int64
+    public init(id: Int64) { self.id = id }
 }
 
 // MARK: - Errors
 
-public struct IPCErrorDetail: Codable, Sendable {
-    public let category: String
+/// Stable error codes; the CLI maps each to an exit code (§4.11).
+public enum IPCErrorCode: String, Codable, Sendable {
+    case invalidRequest = "invalid_request"
+    case notFound = "not_found"
+    case unsupported
+    case incompatible
+    case busy
+    case `internal`
+
+    public var exitCode: Int32 {
+        switch self {
+        case .invalidRequest, .unsupported: 1
+        case .notFound: 2
+        case .internal: 7
+        case .incompatible: 8
+        case .busy: 9
+        }
+    }
+}
+
+public struct IPCFailure: Codable, Sendable, Equatable, Error {
+    public let code: IPCErrorCode
     public let message: String
 
-    public init(category: String, message: String) {
-        self.category = category
+    public init(_ code: IPCErrorCode, _ message: String) {
+        self.code = code
         self.message = message
-    }
-
-    public static func invalidRequest(_ message: String) -> IPCErrorDetail {
-        IPCErrorDetail(category: "invalid_request", message: message)
-    }
-
-    public static func notFound(_ message: String) -> IPCErrorDetail {
-        IPCErrorDetail(category: "not_found", message: message)
-    }
-
-    public static func unsupported(_ message: String) -> IPCErrorDetail {
-        IPCErrorDetail(category: "unsupported", message: message)
-    }
-
-    public static func internalFailure(_ message: String) -> IPCErrorDetail {
-        IPCErrorDetail(category: "internal_failure", message: message)
     }
 }
 
@@ -187,61 +78,128 @@ public struct IPCErrorDetail: Codable, Sendable {
 public struct IPCResponse<T: Codable & Sendable>: Codable, Sendable {
     public let ok: Bool
     public let data: T?
-    public let error: String?
-    public let errorDetail: IPCErrorDetail?
+    public let error: IPCFailure?
 
-    public static func success(_ data: T) -> IPCResponse {
-        IPCResponse(ok: true, data: data, error: nil, errorDetail: nil)
-    }
+    public static func success(_ data: T) -> IPCResponse { IPCResponse(ok: true, data: data, error: nil) }
+    public static func failure(_ error: IPCFailure) -> IPCResponse { IPCResponse(ok: false, data: nil, error: error) }
 
-    public static func failure(_ error: String) -> IPCResponse<T> {
-        IPCResponse(ok: false, data: nil, error: error, errorDetail: nil)
-    }
-
-    public static func failure(_ detail: IPCErrorDetail) -> IPCResponse<T> {
-        IPCResponse(ok: false, data: nil, error: detail.message, errorDetail: detail)
-    }
-
-    public init(ok: Bool, data: T?, error: String?, errorDetail: IPCErrorDetail? = nil) {
+    public init(ok: Bool, data: T?, error: IPCFailure?) {
         self.ok = ok
         self.data = data
         self.error = error
-        self.errorDetail = errorDetail
+    }
+
+    /// The data, or the failure as a thrown error.
+    public func get() throws -> T {
+        if ok, let data { return data }
+        throw error ?? IPCFailure(.internal, "malformed response")
     }
 }
 
-// MARK: - Response Data Types
+/// The shared encoder/decoder settings for IPC and CLI JSON.
+public enum MuninnJSON {
+    public static func encoder(pretty: Bool = false) -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(iso8601(date))
+        }
+        encoder.outputFormatting = pretty ? [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes] : [.sortedKeys]
+        return encoder
+    }
 
-public struct ListResponseData: Codable, Sendable {
-    public let entries: [ClipboardEntry]
-    public let total: Int
+    public static func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let string = try decoder.singleValueContainer().decode(String.self)
+            if let date = parseISO8601(string) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad date \(string)"))
+        }
+        return decoder
+    }
 
-    public init(entries: [ClipboardEntry], total: Int) {
-        self.entries = entries
-        self.total = total
+    /// ISO-8601 UTC with milliseconds, e.g. `2026-11-12T09:30:00.123Z`.
+    public static func iso8601(_ date: Date) -> String {
+        // Round to the millisecond ourselves: the formatter truncates, so a
+        // stored 123 ms (0.12299… as a Double) would print as .122.
+        let ms = Int64((date.timeIntervalSince1970 * 1000).rounded())
+        let (seconds, fraction) = ms.quotientAndRemainder(dividingBy: 1000)
+        let whole = seconds - (fraction < 0 ? 1 : 0)
+        let millis = (fraction + 1000) % 1000
+        let base = Date(timeIntervalSince1970: TimeInterval(whole))
+            .formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeZone(separator: .omitted))
+        // base ends in "Z"; insert the milliseconds before it.
+        return String(base.dropLast()) + String(format: ".%03lldZ", millis)
+    }
+
+    public static func parseISO8601(_ string: String) -> Date? {
+        if let date = try? Date(string, strategy: .iso8601.year().month().day().time(includingFractionalSeconds: true)) {
+            return date
+        }
+        return try? Date(string, strategy: .iso8601)
     }
 }
 
-public struct SearchResponseData: Codable, Sendable {
-    public let entries: [ClipboardEntry]
+// MARK: - Response data
 
-    public init(entries: [ClipboardEntry]) {
-        self.entries = entries
-    }
+public struct HelloInfo: Codable, Sendable, Equatable {
+    public let protocolVersion: Int
+    public init(protocolVersion: Int) { self.protocolVersion = protocolVersion }
 }
 
-public struct StatusResponseData: Codable, Sendable {
-    public let running: Bool
-    public let entryCount: Int
-    public let dbPath: String
-    public let uptimeSeconds: Int
+/// Capture counters shown by `status` (§4.8). Privacy skips are deliberately
+/// absent: they leave no trace (invariant 4).
+public struct CaptureCounters: Codable, Sendable, Equatable {
+    public var observedChanges = 0
+    public var missedChanges = 0
+    public var droppedBackpressure = 0
+    public var selfCopies = 0
+    public var omittedBySize = 0
+    /// Changes offering nothing Muninn keeps (e.g. only app-private types).
+    public var skippedUnsupported = 0
+    public var storeErrors = 0
+
+    public init() {}
+}
+
+public struct StatusInfo: Codable, Sendable, Equatable {
+    public let protocolVersion: Int
+    public let itemCount: Int
     public let isPaused: Bool
+    public let uptimeSeconds: Int
+    public let dataDirectory: String
+    public let isDevBuild: Bool
+    public let counters: CaptureCounters
 
-    public init(running: Bool, entryCount: Int, dbPath: String, uptimeSeconds: Int, isPaused: Bool) {
-        self.running = running
-        self.entryCount = entryCount
-        self.dbPath = dbPath
-        self.uptimeSeconds = uptimeSeconds
+    public init(
+        protocolVersion: Int, itemCount: Int, isPaused: Bool, uptimeSeconds: Int,
+        dataDirectory: String, isDevBuild: Bool, counters: CaptureCounters
+    ) {
+        self.protocolVersion = protocolVersion
+        self.itemCount = itemCount
         self.isPaused = isPaused
+        self.uptimeSeconds = uptimeSeconds
+        self.dataDirectory = dataDirectory
+        self.isDevBuild = isDevBuild
+        self.counters = counters
     }
+}
+
+public struct PausedState: Codable, Sendable, Equatable {
+    public let isPaused: Bool
+    public init(isPaused: Bool) { self.isPaused = isPaused }
+}
+
+public struct HistoryInfo: Codable, Sendable, Equatable {
+    public let id: Int64
+    public let events: [CaptureEventInfo]
+    public init(id: Int64, events: [CaptureEventInfo]) {
+        self.id = id
+        self.events = events
+    }
+}
+
+public struct ItemRef: Codable, Sendable, Equatable {
+    public let id: Int64
+    public init(id: Int64) { self.id = id }
 }

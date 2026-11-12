@@ -1,171 +1,121 @@
 import Testing
 import Foundation
+import MuninnCore
 @testable import MuninnIPC
-@testable import MuninnCore
 
-@Suite("IPC")
-struct IPCTests {
-    @Test("Roundtrip request and response over socket")
-    func roundtrip() throws {
-        let socketPath = NSTemporaryDirectory() + "muninn-test-\(UUID().uuidString).sock"
-        defer { unlink(socketPath) }
+func tempSocketPath() -> String {
+    // sun_path is short (104 bytes), so keep this under /tmp.
+    "/tmp/mn-ipc-\(UUID().uuidString.prefix(8)).sock"
+}
 
-        let server = IPCServer(socketPath: socketPath) { request in
-            let encoder = JSONEncoder()
-            if request.method == "echo" {
-                let response = IPCResponse(ok: true, data: "echoed", error: nil)
-                return try encoder.encode(response)
-            } else {
-                let response = IPCResponse<String>(ok: false, data: nil, error: "unknown")
-                return try encoder.encode(response)
-            }
+/// An echo server: replies to `hello` and fails everything else.
+func startServer(_ path: String, delay: Duration = .zero) throws -> IPCServer {
+    let server = IPCServer(socketPath: path) { data in
+        if delay > .zero { try? await Task.sleep(for: delay) }
+        let header = try? MuninnJSON.decoder().decode(IPCRequestHeader.self, from: data)
+        if header?.method == "hello" {
+            return try! MuninnJSON.encoder().encode(IPCResponse.success(HelloInfo(protocolVersion: MuninnProtocol.version)))
         }
+        return try! MuninnJSON.encoder().encode(IPCResponse<NoParams>.failure(IPCFailure(.unsupported, "nope")))
+    }
+    try server.start()
+    return server
+}
 
-        try server.start()
+@Suite("IPC transport")
+struct IPCTransportTests {
+    @Test func roundtripDecodesData() throws {
+        let path = tempSocketPath()
+        let server = try startServer(path)
         defer { server.stop() }
 
-        // Give server a moment to start
-        Thread.sleep(forTimeInterval: 0.1)
-
-        let client = IPCClient(socketPath: socketPath)
-        let request = IPCRequest(method: "echo", params: .empty)
-        let response = try client.sendAndDecode(request, as: IPCResponse<String>.self)
-
-        #expect(response.ok == true)
-        #expect(response.data == "echoed")
+        let response = try IPCClient(socketPath: path).call(.hello, NoParams(), as: HelloInfo.self)
+        #expect(try response.get() == HelloInfo(protocolVersion: MuninnProtocol.version))
     }
 
-    @Test("Client gets error for connection to nonexistent socket")
-    func connectionFailure() throws {
-        let client = IPCClient(socketPath: "/tmp/muninn-nonexistent-\(UUID().uuidString).sock")
-        let request = IPCRequest(method: "test", params: .empty)
+    @Test func failureEnvelopeThrowsFromGet() throws {
+        let path = tempSocketPath()
+        let server = try startServer(path)
+        defer { server.stop() }
 
+        let response = try IPCClient(socketPath: path).call(.status, NoParams(), as: StatusInfo.self)
+        #expect(response.ok == false)
+        #expect(throws: IPCFailure(.unsupported, "nope")) { try response.get() }
+    }
+
+    @Test func missingSocketIsATransportError() {
         #expect(throws: IPCError.self) {
-            try client.send(request)
+            _ = try IPCClient(socketPath: tempSocketPath()).call(.hello, NoParams(), as: HelloInfo.self)
         }
     }
 
-    // MARK: - IPCResponse
-
-    @Test("IPCResponse.failure sets ok to false")
-    func failureResponse() throws {
-        let response = IPCResponse<String>.failure("something went wrong")
-        #expect(response.ok == false)
-        #expect(response.error == "something went wrong")
-        #expect(response.data == nil)
+    @Test func socketFileIsOwnerOnly() throws {
+        let path = tempSocketPath()
+        let server = try startServer(path)
+        defer { server.stop() }
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
+        #expect(mode.map { $0 & 0o077 } == 0)
     }
 
-    @Test("IPCResponse.failure with detail sets category and message")
-    func failureWithDetail() throws {
-        let response = IPCResponse<String>.failure(.notFound("entry not found: 42"))
-        #expect(response.ok == false)
-        #expect(response.error == "entry not found: 42")
-        #expect(response.errorDetail?.category == "not_found")
+    @Test func oversizedRequestIsRejected() throws {
+        let path = tempSocketPath()
+        let server = try startServer(path)
+        defer { server.stop() }
+
+        let huge = Data(repeating: UInt8(ascii: "a"), count: MuninnLimits.maxRequestBytes + 10)
+        let reply = try IPCClient(socketPath: path).send(huge)
+        let response = try MuninnJSON.decoder().decode(IPCResponse<NoParams>.self, from: reply)
+        #expect(response.error?.code == .invalidRequest)
     }
 
-    // MARK: - IPCRequest encoding/decoding
+    @Test func slowRequestsRunConcurrently() async throws {
+        let path = tempSocketPath()
+        let server = try startServer(path, delay: .milliseconds(300))
+        defer { server.stop() }
 
-    @Test("Roundtrip encoding for search request")
-    func searchRequestRoundtrip() throws {
-        let request = IPCRequest(method: "search", params: .search(.init(query: "hello", limit: 10)))
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(request)
-        let decoded = try decoder.decode(IPCRequest.self, from: data)
-
-        #expect(decoded.method == "search")
-        guard case .search(let params) = decoded.params else {
-            Issue.record("expected search params"); return
+        let start = ContinuousClock.now
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<5 {
+                group.addTask {
+                    _ = try IPCClient(socketPath: path).call(.hello, NoParams(), as: HelloInfo.self).get()
+                }
+            }
+            try await group.waitForAll()
         }
-        #expect(params.query == "hello")
-        #expect(params.limit == 10)
+        #expect(ContinuousClock.now - start < .milliseconds(1200), "five 300 ms requests shouldn't run one after another")
     }
 
-    @Test("Roundtrip encoding for copy request")
-    func copyRequestRoundtrip() throws {
-        let request = IPCRequest(method: "copy", params: .copy(.init(id: 42)))
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
+    @Test func undecodableResponseIsReportedAsIncompatible() throws {
+        let path = tempSocketPath()
+        let server = IPCServer(socketPath: path) { _ in Data("{\"something\":\"else\"}".utf8) }
+        try server.start()
+        defer { server.stop() }
+        let response = try IPCClient(socketPath: path).call(.hello, NoParams(), as: HelloInfo.self)
+        #expect(response.error?.code == .incompatible)
+    }
+}
 
-        let data = try encoder.encode(request)
-        let decoded = try decoder.decode(IPCRequest.self, from: data)
-
-        #expect(decoded.method == "copy")
-        guard case .copy(let params) = decoded.params else {
-            Issue.record("expected copy params"); return
-        }
-        #expect(params.id == 42)
+@Suite("IPC messages")
+struct IPCMessageTests {
+    @Test func errorCodesMapToCLIExitCodes() {
+        #expect(IPCErrorCode.invalidRequest.exitCode == 1)
+        #expect(IPCErrorCode.notFound.exitCode == 2)
+        #expect(IPCErrorCode.internal.exitCode == 7)
+        #expect(IPCErrorCode.incompatible.exitCode == 8)
+        #expect(IPCErrorCode.busy.exitCode == 9)
     }
 
-    @Test("Roundtrip encoding for delete request")
-    func deleteRequestRoundtrip() throws {
-        let request = IPCRequest(method: "delete", params: .delete(.init(id: 7)))
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(request)
-        let decoded = try decoder.decode(IPCRequest.self, from: data)
-
-        #expect(decoded.method == "delete")
-        guard case .delete(let params) = decoded.params else {
-            Issue.record("expected delete params"); return
-        }
-        #expect(params.id == 7)
+    @Test func datesAreISO8601UTCWithMilliseconds() throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000.123)
+        let json = String(decoding: try MuninnJSON.encoder().encode(["at": date]), as: UTF8.self)
+        #expect(json == #"{"at":"2027-01-15T08:00:00.123Z"}"#)
+        let back = try MuninnJSON.decoder().decode([String: Date].self, from: Data(json.utf8))
+        #expect(abs(back["at"]!.timeIntervalSince(date)) < 0.001)
     }
 
-    @Test("Roundtrip encoding for pin/unpin requests")
-    func pinUnpinRequestRoundtrip() throws {
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let pinReq = IPCRequest(method: "pin", params: .pin(.init(id: 5)))
-        let pinData = try encoder.encode(pinReq)
-        let pinDecoded = try decoder.decode(IPCRequest.self, from: pinData)
-        #expect(pinDecoded.method == "pin")
-        guard case .pin(let pinParams) = pinDecoded.params else {
-            Issue.record("expected pin params"); return
-        }
-        #expect(pinParams.id == 5)
-
-        let unpinReq = IPCRequest(method: "unpin", params: .unpin(.init(id: 5)))
-        let unpinData = try encoder.encode(unpinReq)
-        let unpinDecoded = try decoder.decode(IPCRequest.self, from: unpinData)
-        #expect(unpinDecoded.method == "unpin")
-        guard case .unpin(let unpinParams) = unpinDecoded.params else {
-            Issue.record("expected unpin params"); return
-        }
-        #expect(unpinParams.id == 5)
-    }
-
-    @Test("Roundtrip encoding for pause/resume requests")
-    func pauseResumeRequestRoundtrip() throws {
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let pauseReq = IPCRequest(method: "pause", params: .pause)
-        let pauseData = try encoder.encode(pauseReq)
-        let pauseDecoded = try decoder.decode(IPCRequest.self, from: pauseData)
-        #expect(pauseDecoded.method == "pause")
-
-        let resumeReq = IPCRequest(method: "resume", params: .resume)
-        let resumeData = try encoder.encode(resumeReq)
-        let resumeDecoded = try decoder.decode(IPCRequest.self, from: resumeData)
-        #expect(resumeDecoded.method == "resume")
-    }
-
-    @Test("Unknown method decodes with empty params")
-    func unknownMethodDecodes() throws {
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let request = IPCRequest(method: "nonexistent", params: .empty)
-        let data = try encoder.encode(request)
-        let decoded = try decoder.decode(IPCRequest.self, from: data)
-
-        #expect(decoded.method == "nonexistent")
-        guard case .empty = decoded.params else {
-            Issue.record("expected empty params for unknown method"); return
-        }
+    @Test func requestsEncodeMethodAndParams() throws {
+        let data = try MuninnJSON.encoder().encode(IPCRequest(.get, ItemIDParams(id: 7)))
+        #expect(String(decoding: data, as: UTF8.self) == #"{"method":"get","params":{"id":7}}"#)
+        #expect(try MuninnJSON.decoder().decode(IPCRequestHeader.self, from: data).method == "get")
     }
 }

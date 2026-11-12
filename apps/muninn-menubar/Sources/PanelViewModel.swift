@@ -11,7 +11,7 @@ enum DaemonStatus {
 @MainActor
 final class PanelViewModel: ObservableObject {
     @Published var searchText: String = ""
-    @Published var entries: [ClipboardEntry] = []
+    @Published var entries: [ItemSummary] = []
     @Published var selectedIndex: Int = 0
     @Published var daemonStatus: DaemonStatus = .unknown
     @Published var totalCount: Int = 0
@@ -19,87 +19,52 @@ final class PanelViewModel: ObservableObject {
     var requestClose: (() -> Void)?
 
     private let daemon = DaemonClient()
-    private var searchWorkItem: DispatchWorkItem?
+    /// The in-flight load; a newer keystroke cancels it (§4.7 cancellation).
+    private var loadTask: Task<Void, Never>?
+    private var actionTask: Task<Void, Never>?
 
     func onPanelOpen() {
         searchText = ""
         selectedIndex = 0
         entries = []
-
-        Task {
-            await loadInitial()
-        }
+        reload(debounce: false)
+        actionTask = Task { await fetchStatus() }
     }
 
     func onSearchTextChanged(_ newValue: String) {
         searchText = newValue
-        searchWorkItem?.cancel()
-
-        if newValue.isEmpty {
-            Task { await performList() }
-            return
-        }
-
-        let item = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                await self?.performSearch(newValue)
-            }
-        }
-        searchWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+        reload(debounce: !newValue.isEmpty)
     }
 
     func copySelected() {
-        guard let entry = selectedEntry, entry.kind == .text else { return }
-        Task {
-            try? await daemon.copy(id: entry.id)
-        }
+        guard let entry = selectedEntry else { return }
+        actionTask = Task { try? await daemon.copy(id: entry.id) }
     }
 
     func deleteSelected() {
         guard let entry = selectedEntry else { return }
-        let removedIndex = selectedIndex
-        entries.remove(at: removedIndex)
+        entries.remove(at: selectedIndex)
         selectedIndex = min(selectedIndex, max(entries.count - 1, 0))
-
-        Task {
-            try? await daemon.delete(id: entry.id)
-        }
+        actionTask = Task { try? await daemon.delete(id: entry.id) }
     }
 
     func togglePinSelected() {
         guard let entry = selectedEntry else { return }
-        let index = selectedIndex
-
-        Task {
+        actionTask = Task {
             do {
-                let updated: ClipboardEntry
-                if entry.isPinned {
-                    updated = try await daemon.unpin(id: entry.id)
-                } else {
-                    updated = try await daemon.pin(id: entry.id)
-                }
-                if index < entries.count, entries[index].id == entry.id {
-                    entries[index] = updated
-                }
+                try await daemon.setPinned(id: entry.id, !entry.isPinned)
+                reload(debounce: false, keepSelection: true)
             } catch {
-                // Silent failure — entry stays in current state
+                // The entry stays as it was.
             }
         }
     }
 
     func togglePause() {
-        Task {
-            do {
-                let isPaused: Bool
-                if daemonStatus == .paused {
-                    isPaused = try await daemon.resume()
-                } else {
-                    isPaused = try await daemon.pause()
-                }
+        let pause = daemonStatus != .paused
+        actionTask = Task {
+            if let isPaused = try? await daemon.setPaused(pause) {
                 daemonStatus = isPaused ? .paused : .connected
-            } catch {
-                // Silent failure
             }
         }
     }
@@ -114,55 +79,48 @@ final class PanelViewModel: ObservableObject {
         selectedIndex = min(selectedIndex + 1, entries.count - 1)
     }
 
-    var selectedEntry: ClipboardEntry? {
+    var selectedEntry: ItemSummary? {
         guard selectedIndex >= 0, selectedIndex < entries.count else { return nil }
         return entries[selectedIndex]
     }
 
     // MARK: - Private
 
-    private func loadInitial() async {
-        async let statusTask: Void = fetchStatus()
-        async let listTask: Void = performList()
-        _ = await (statusTask, listTask)
+    private func reload(debounce: Bool, keepSelection: Bool = false) {
+        loadTask?.cancel()
+        let query = searchText
+        loadTask = Task {
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            guard !Task.isCancelled else { return }
+            do {
+                let page = query.isEmpty
+                    ? try await daemon.list()
+                    : try await daemon.search(query: query)
+                guard !Task.isCancelled else { return }
+                entries = page.items
+                if query.isEmpty { totalCount = page.total }
+                selectedIndex = keepSelection ? min(selectedIndex, max(entries.count - 1, 0)) : 0
+                if daemonStatus == .unavailable || daemonStatus == .unknown {
+                    daemonStatus = .connected
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                daemonStatus = .unavailable
+                entries = []
+            }
+        }
     }
 
     private func fetchStatus() async {
         do {
             let status = try await daemon.status()
             daemonStatus = status.isPaused ? .paused : .connected
-            totalCount = status.entryCount
+            totalCount = status.itemCount
         } catch {
             daemonStatus = .unavailable
-        }
-    }
-
-    private func performList() async {
-        do {
-            let result = try await daemon.list()
-            entries = result.entries
-            totalCount = result.total
-            selectedIndex = 0
-            if daemonStatus == .unavailable || daemonStatus == .unknown {
-                daemonStatus = .connected
-            }
-        } catch {
-            daemonStatus = .unavailable
-            entries = []
-        }
-    }
-
-    private func performSearch(_ query: String) async {
-        do {
-            let result = try await daemon.search(query: query)
-            entries = result.entries
-            selectedIndex = 0
-            if daemonStatus == .unavailable || daemonStatus == .unknown {
-                daemonStatus = .connected
-            }
-        } catch {
-            daemonStatus = .unavailable
-            entries = []
         }
     }
 }

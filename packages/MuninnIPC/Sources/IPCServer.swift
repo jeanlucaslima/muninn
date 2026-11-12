@@ -5,13 +5,23 @@ import MuninnCore
 import Darwin
 #endif
 
+// C-interop layer for the v1 Unix-socket transport, kept until D21 /
+// PROOF-002 decide the transport (design §4.6). It has no peer
+// authentication: any local process running as the user can connect.
+
+/// One request line in, one response line out, per connection.
+///
+/// SAFETY (`@unchecked Sendable`): `serverFd` and `running` are written by
+/// `start()`/`stop()` and read by the accept thread; a stale read only makes
+/// the accept loop exit one iteration late. Each connection is handled on its
+/// own thread and shares nothing else.
 public final class IPCServer: @unchecked Sendable {
     private let socketPath: String
-    private let handler: @Sendable (IPCRequest) throws -> Data
+    private let handler: @Sendable (Data) async -> Data
     private var serverFd: Int32 = -1
     private var running = false
 
-    public init(socketPath: String, handler: @escaping @Sendable (IPCRequest) throws -> Data) {
+    public init(socketPath: String, handler: @escaping @Sendable (Data) async -> Data) {
         self.socketPath = socketPath
         self.handler = handler
     }
@@ -38,25 +48,26 @@ public final class IPCServer: @unchecked Sendable {
             }
         }
 
+        // Owner-only socket file.
+        let oldMask = umask(0o077)
         let bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
                 bind(serverFd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
+        umask(oldMask)
         guard bindResult == 0 else {
             close(serverFd)
             throw IPCError.bindFailed(String(cString: strerror(errno)))
         }
 
-        guard listen(serverFd, 5) == 0 else {
+        guard listen(serverFd, 16) == 0 else {
             close(serverFd)
             unlink(socketPath)
             throw IPCError.listenFailed(String(cString: strerror(errno)))
         }
 
         running = true
-
-        // Accept connections on a background thread
         Thread.detachNewThread { [weak self] in
             self?.acceptLoop()
         }
@@ -75,20 +86,11 @@ public final class IPCServer: @unchecked Sendable {
 
     private func acceptLoop() {
         while running {
-            var clientAddr = sockaddr_un()
-            var clientAddrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-            let clientFd = withUnsafeMutablePointer(to: &clientAddr) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                    accept(serverFd, sockPtr, &clientAddrLen)
-                }
-            }
-
+            let clientFd = accept(serverFd, nil, nil)
             guard clientFd >= 0 else {
                 if running { continue }
                 break
             }
-
-            // Handle each connection on a detached thread
             Thread.detachNewThread { [weak self] in
                 self?.handleConnection(clientFd)
             }
@@ -98,20 +100,34 @@ public final class IPCServer: @unchecked Sendable {
     private func handleConnection(_ fd: Int32) {
         defer { close(fd) }
 
-        guard let line = readLine(from: fd) else { return }
-
-        let decoder = JSONDecoder()
-        do {
-            let request = try decoder.decode(IPCRequest.self, from: Data(line.utf8))
-            let responseData = try handler(request)
-            writeLine(to: fd, data: responseData)
-        } catch {
-            let errorResponse = #"{"ok":false,"error":"\#(error.localizedDescription)"}"#
-            writeLine(to: fd, data: Data(errorResponse.utf8))
+        let response: Data
+        switch readLine(from: fd) {
+        case .none:
+            return
+        case .some(.tooLarge):
+            response = Self.failure(IPCFailure(.invalidRequest, "request larger than \(MuninnLimits.maxRequestBytes) bytes"))
+        case .some(.line(let line)):
+            // Bridge this connection thread to the async handler. The thread
+            // is a dedicated one (not the cooperative pool), so blocking it is fine.
+            let box = ResponseBox()
+            let done = DispatchSemaphore(value: 0)
+            let handler = self.handler
+            Task {
+                box.data = await handler(line)
+                done.signal()
+            }
+            done.wait()
+            response = box.data
         }
+        writeLine(to: fd, data: response)
     }
 
-    private func readLine(from fd: Int32) -> String? {
+    private enum ReadResult {
+        case line(Data)
+        case tooLarge
+    }
+
+    private func readLine(from fd: Int32) -> ReadResult? {
         var buffer = [UInt8](repeating: 0, count: 65536)
         var accumulated = Data()
 
@@ -119,30 +135,39 @@ public final class IPCServer: @unchecked Sendable {
             let bytesRead = read(fd, &buffer, buffer.count)
             if bytesRead <= 0 { break }
             accumulated.append(contentsOf: buffer[..<bytesRead])
+            if accumulated.count > MuninnLimits.maxRequestBytes { return .tooLarge }
             if accumulated.contains(UInt8(ascii: "\n")) { break }
         }
 
         guard !accumulated.isEmpty else { return nil }
-        // Strip trailing newline
-        if accumulated.last == UInt8(ascii: "\n") {
-            accumulated.removeLast()
+        if let newline = accumulated.firstIndex(of: UInt8(ascii: "\n")) {
+            accumulated = accumulated[accumulated.startIndex..<newline]
         }
-        return String(data: accumulated, encoding: .utf8)
+        return .line(Data(accumulated))
     }
 
     private func writeLine(to fd: Int32, data: Data) {
         var payload = data
         payload.append(UInt8(ascii: "\n"))
         payload.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = write(fd, base, payload.count)
+            guard var base = ptr.baseAddress else { return }
+            var remaining = payload.count
+            while remaining > 0 {
+                let written = write(fd, base, remaining)
+                if written <= 0 { return }
+                remaining -= written
+                base += written
+            }
         }
+    }
+
+    static func failure(_ error: IPCFailure) -> Data {
+        (try? MuninnJSON.encoder().encode(IPCResponse<NoParams>.failure(error))) ?? Data()
     }
 
     private func cleanupStaleSocket() {
         guard FileManager.default.fileExists(atPath: socketPath) else { return }
 
-        // Try to connect — if it fails, the socket is stale
         let testFd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard testFd >= 0 else {
             unlink(socketPath)
@@ -167,11 +192,16 @@ public final class IPCServer: @unchecked Sendable {
         }
 
         if connectResult != 0 {
-            // Stale socket — remove it
             unlink(socketPath)
         }
-        // If connect succeeded, someone is already listening — we'll fail on bind (correct behavior)
+        // If connect succeeded, someone is already listening; bind fails, correctly.
     }
+}
+
+/// SAFETY: written once by the handler task before `signal()`, read once by
+/// the connection thread after `wait()`; the semaphore orders the two.
+private final class ResponseBox: @unchecked Sendable {
+    var data = Data()
 }
 
 public enum IPCError: Error, CustomStringConvertible {

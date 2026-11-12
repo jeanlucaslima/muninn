@@ -1,191 +1,109 @@
 import Foundation
+import os
 import MuninnCore
 import MuninnStore
+import MuninnSearch
 import MuninnClipboard
 import MuninnIPC
 
-// MARK: - Setup
+// Composition root (design §4.1): creates every dependency once and wires them.
+// Logs carry ids, counts and error categories only, never clipboard content (§4.15).
 
-try MuninnPaths.ensureDirectoryExists()
+let log = Logger(subsystem: "com.muninn", category: "helper")
 
-let store = try ClipboardStore(path: MuninnPaths.databasePath)
-let startTime = Date()
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write(Data("muninnd: \(message)\n".utf8))
+    exit(1)
+}
 
-print("muninnd: starting...")
-print("muninnd: database at \(MuninnPaths.databasePath)")
-print("muninnd: socket at \(MuninnPaths.socketPath)")
+do {
+    try MuninnPaths.ensureDirectoryExists()
+} catch {
+    fail("cannot create the data directory: \(error)")
+}
 
-// MARK: - Clipboard Watcher (created before server so the handler can capture it)
+let writer: StoreWriter
+let readers: ReaderPool
+do {
+    writer = try StoreWriter(path: MuninnPaths.databasePath)
+    readers = try ReaderPool(path: MuninnPaths.databasePath)
+} catch {
+    fail("cannot open the store: \(error)")
+}
 
-let watcher = ClipboardWatcher { capture in
-    do {
-        switch try store.insert(kind: capture.kind, content: capture.content, metadata: capture.metadata) {
-        case .stored(let entry):
-            let preview = String(entry.displayContent.prefix(60))
-            print("muninnd: captured \(entry.kind.rawValue) entry #\(entry.id): \(preview)")
-        case .deduplicated:
-            break
-        case .skippedTooLarge(let contentSize, let maxSize):
-            print("muninnd: skipped clipboard entry — content size \(contentSize) bytes exceeds limit of \(maxSize) bytes")
-        }
-    } catch {
-        print("muninnd: error storing clipboard entry: \(error)")
+let monitor = CaptureMonitor()
+
+/// The system `CaptureControl`: the pasteboard monitor and writer, on the main actor.
+@MainActor
+final class SystemCaptureControl: CaptureControl {
+    let monitor: CaptureMonitor
+
+    init(monitor: CaptureMonitor) {
+        self.monitor = monitor
+    }
+
+    func pause() { monitor.pause() }
+    func resume() { monitor.resume() }
+    func state() -> (isPaused: Bool, counters: CaptureCounters) { (monitor.isPaused, monitor.counters) }
+
+    func restore(itemID: Int64, representations: [RepresentationInput]) {
+        let changeCount = PasteboardWriter.write(itemID: itemID, representations: representations)
+        monitor.noteOwnWrite(changeCount: changeCount)
     }
 }
 
-// MARK: - IPC Server
+let router = RequestRouter(
+    writer: writer,
+    readers: readers,
+    search: SearchService(pool: readers),
+    capture: SystemCaptureControl(monitor: monitor),
+    startedAt: Date(),
+    dataDirectory: MuninnPaths.applicationSupportDir
+)
 
-let encoder = JSONEncoder()
-encoder.dateEncodingStrategy = .iso8601
-
-func encode<T: Codable & Sendable>(_ response: IPCResponse<T>) throws -> Data {
-    try encoder.encode(response)
-}
-
-let server = IPCServer(socketPath: MuninnPaths.socketPath) { request in
-    do {
-        switch request.method {
-        case "list":
-            var limit = 20
-            var offset = 0
-            if case .list(let params) = request.params {
-                limit = params.limit ?? 20
-                offset = params.offset ?? 0
+// Persist observed changes in order. Capture never waits on this: the
+// monitor only reads, and drops what doesn't fit (§4.8 backpressure).
+let consumer = Task {
+    for await change in monitor.changes {
+        switch change {
+        case .capture(let input):
+            do {
+                let outcome = try await writer.capture(input)
+                log.debug("captured item \(outcome.itemID, privacy: .public)")
+            } catch {
+                monitor.recordStoreError()
+                log.error("capture failed: \(String(describing: type(of: error)), privacy: .public)")
             }
-            guard limit > 0 else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("limit must be greater than 0")))
+            monitor.didProcess()
+        case .selfCopy(let itemID, let at, let changeCount):
+            do {
+                try await writer.recordSelfCopy(itemID: itemID, at: at, changeCount: changeCount)
+            } catch {
+                monitor.recordStoreError()
+                log.error("self-copy event failed: \(String(describing: type(of: error)), privacy: .public)")
             }
-            guard offset >= 0 else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("offset must not be negative")))
-            }
-            let result = try store.list(limit: limit, offset: offset)
-            let data = ListResponseData(entries: result.entries, total: result.total)
-            return try encode(IPCResponse.success(data))
-
-        case "search":
-            guard case .search(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing query parameter")))
-            }
-            let trimmed = params.query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("query must not be empty")))
-            }
-            let limit = params.limit ?? 20
-            guard limit > 0 else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("limit must be greater than 0")))
-            }
-            let entries = try store.search(query: trimmed, limit: limit)
-            return try encode(IPCResponse.success(SearchResponseData(entries: entries)))
-
-        case "get":
-            guard case .get(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing id parameter")))
-            }
-            if let entry = try store.get(id: params.id) {
-                return try encode(IPCResponse.success(entry))
-            } else {
-                return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
-            }
-
-        case "copy":
-            guard case .copy(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing id parameter")))
-            }
-            guard let entry = try store.get(id: params.id) else {
-                return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
-            }
-            guard entry.kind == .text else {
-                return try encode(IPCResponse<String>.failure(.unsupported("cannot copy this item yet")))
-            }
-            DispatchQueue.main.sync {
-                ClipboardWriter.write(entry.content)
-            }
-            return try encode(IPCResponse.success(entry))
-
-        case "delete":
-            guard case .delete(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing id parameter")))
-            }
-            let deleted = try store.delete(id: params.id)
-            if deleted {
-                return try encode(IPCResponse.success(["id": params.id]))
-            } else {
-                return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
-            }
-
-        case "pin":
-            guard case .pin(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing id parameter")))
-            }
-            let pinned = try store.pin(id: params.id)
-            if pinned, let entry = try store.get(id: params.id) {
-                return try encode(IPCResponse.success(entry))
-            } else {
-                return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
-            }
-
-        case "unpin":
-            guard case .unpin(let params) = request.params else {
-                return try encode(IPCResponse<String>.failure(.invalidRequest("missing id parameter")))
-            }
-            let unpinned = try store.unpin(id: params.id)
-            if unpinned, let entry = try store.get(id: params.id) {
-                return try encode(IPCResponse.success(entry))
-            } else {
-                return try encode(IPCResponse<String>.failure(.notFound("entry not found: \(params.id)")))
-            }
-
-        case "pause":
-            DispatchQueue.main.sync { watcher.pause() }
-            print("muninnd: clipboard watching paused")
-            return try encode(IPCResponse.success(["paused": true]))
-
-        case "resume":
-            DispatchQueue.main.sync { watcher.resume() }
-            print("muninnd: clipboard watching resumed")
-            return try encode(IPCResponse.success(["paused": false]))
-
-        case "status":
-            let count = try store.count()
-            let uptime = Int(Date().timeIntervalSince(startTime))
-            let data = StatusResponseData(
-                running: true,
-                entryCount: count,
-                dbPath: MuninnPaths.databasePath,
-                uptimeSeconds: uptime,
-                isPaused: watcher.paused
-            )
-            return try encode(IPCResponse.success(data))
-
-        default:
-            return try encode(IPCResponse<String>.failure(.unsupported("unknown method: \(request.method)")))
         }
-    } catch {
-        return try encoder.encode(IPCResponse<String>.failure(.internalFailure("\(error)")))
     }
 }
 
-try server.start()
-print("muninnd: IPC server listening")
+let server = IPCServer(socketPath: MuninnPaths.socketPath) { data in
+    await router.handle(data)
+}
+do {
+    try server.start()
+} catch {
+    fail("cannot listen on the socket: \(error)")
+}
 
-// MARK: - Start Clipboard Watcher
+monitor.start()
+log.notice("ready (dev build: \(MuninnPaths.isDevBuild, privacy: .public))")
+print("muninnd: ready, data in \(MuninnPaths.applicationSupportDir)")
 
-watcher.start()
-print("muninnd: clipboard watcher active (polling every 0.5s)")
-
-// MARK: - Signal Handling
-
-let signalCallback: @convention(c) (Int32) -> Void = { signal in
-    print("\nmuninnd: shutting down (signal \(signal))...")
-    // Server.stop() removes the socket file
+let signalCallback: @convention(c) (Int32) -> Void = { _ in
     unlink(MuninnPaths.socketPath)
     exit(0)
 }
-
 signal(SIGINT, signalCallback)
 signal(SIGTERM, signalCallback)
 
-// MARK: - Run
-
-print("muninnd: ready")
 RunLoop.main.run()

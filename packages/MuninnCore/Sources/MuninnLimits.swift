@@ -25,6 +25,9 @@ public enum MuninnLimits {
     /// Observed changes waiting to be persisted; past it, changes aren't read
     /// and count as `droppedBackpressure`.
     public static let maxPendingCaptures = 8
+    /// Largest IPC request accepted.
+    public static let maxRequestBytes = 1024 * 1024
+
     /// Pasteboard polling interval (D6).
     public static let pollInterval: Duration = .milliseconds(500)
 }
