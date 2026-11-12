@@ -27,6 +27,11 @@ let package = Package(
             path: "packages/MuninnStore/Sources"
         ),
         .target(
+            name: "MuninnSearch",
+            dependencies: ["MuninnCore", "MuninnStore"],
+            path: "packages/MuninnSearch/Sources"
+        ),
+        .target(
             name: "MuninnClipboard",
             dependencies: ["MuninnCore"],
             path: "packages/MuninnClipboard/Sources"
@@ -60,6 +65,11 @@ let package = Package(
             name: "MuninnStoreTests",
             dependencies: ["MuninnStore", "MuninnCore"],
             path: "packages/MuninnStore/Tests"
+        ),
+        .testTarget(
+            name: "MuninnSearchTests",
+            dependencies: ["MuninnSearch", "MuninnStore", "MuninnCore"],
+            path: "packages/MuninnSearch/Tests"
         ),
         .testTarget(
             name: "MuninnIPCTests",
