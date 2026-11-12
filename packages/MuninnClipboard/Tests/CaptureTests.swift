@@ -178,6 +178,29 @@ final class CaptureMonitorTests {
         #expect(captured.representations.map(\.role) == [.primary, .alternate])
     }
 
+    /// Found in a real run: `pbcopy -Prefer rtf` makes the system pasteboard
+    /// advertise plain text that reads back as nil. A private pasteboard
+    /// converts RTF itself, so the rule is tested directly.
+    @Test func undeliveredPrimaryIsReplacedByWhatWasRead() {
+        let rtf = Data("{\\rtf1 hi}".utf8)
+        let promoted = CaptureMonitor.promoteDeliveredPrimary([
+            RepresentationInput(uti: plain, role: .primary, payload: .omitted(.timeout)),
+            RepresentationInput(uti: "public.rtf", role: .alternate, payload: .data(rtf)),
+        ])
+        #expect(promoted.map(\.role) == [.alternate, .primary])
+        #expect(promoted.first?.payload == .omitted(.timeout))
+        #expect(promoted.last?.payload == .data(rtf))
+
+        // Nothing delivered, or a size omission: unchanged.
+        let nothing = [RepresentationInput(uti: plain, role: .primary, payload: .omitted(.timeout))]
+        #expect(CaptureMonitor.promoteDeliveredPrimary(nothing) == nothing)
+        let tooBig = [
+            RepresentationInput(uti: plain, role: .primary, payload: .omitted(.size)),
+            RepresentationInput(uti: "public.rtf", role: .alternate, payload: .data(rtf)),
+        ]
+        #expect(CaptureMonitor.promoteDeliveredPrimary(tooBig) == tooBig)
+    }
+
     @Test func writerRestoresDataAndFileItems() {
         let png = Data([0x89, 0x50, 0x4E, 0x47])
         PasteboardWriter.write(itemID: 7, representations: [
@@ -196,3 +219,4 @@ final class CaptureMonitorTests {
         #expect(urls?.map(\.path) == ["/tmp/x", "/tmp/y"])
     }
 }
+

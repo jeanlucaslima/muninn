@@ -185,7 +185,25 @@ public final class CaptureMonitor {
                 }
             }
         }
-        return out
+        return Self.promoteDeliveredPrimary(out)
+    }
+
+    /// A pasteboard can advertise a type and then deliver nothing (e.g. plain
+    /// text "translated" from RTF). If the planned primary failed but something
+    /// else was read, the first delivered representation becomes primary; the
+    /// failed one stays recorded as omitted.
+    nonisolated static func promoteDeliveredPrimary(_ reps: [RepresentationInput]) -> [RepresentationInput] {
+        guard let primaryIndex = reps.firstIndex(where: { $0.role == .primary }),
+              case .omitted(.timeout) = reps[primaryIndex].payload,
+              let deliveredIndex = reps.firstIndex(where: {
+                  if case .omitted = $0.payload { return false }
+                  return true
+              })
+        else { return reps }
+        var result = reps
+        result[primaryIndex] = RepresentationInput(uti: reps[primaryIndex].uti, role: .alternate, payload: reps[primaryIndex].payload)
+        result[deliveredIndex] = RepresentationInput(uti: reps[deliveredIndex].uti, role: .primary, payload: reps[deliveredIndex].payload)
+        return result
     }
 
     /// `org.nspasteboard.source` when present (high confidence), otherwise
