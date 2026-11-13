@@ -33,6 +33,18 @@ do {
 
 let monitor = CaptureMonitor()
 
+/// This process's physical footprint, as Activity Monitor reports it.
+@Sendable func currentFootprint() -> Int64? {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let rc = withUnsafeMutablePointer(to: &info) { ptr in
+        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    return rc == KERN_SUCCESS ? Int64(info.phys_footprint) : nil
+}
+
 /// The system `CaptureControl`: the pasteboard monitor and writer, on the main actor.
 @MainActor
 final class SystemCaptureControl: CaptureControl {
@@ -58,7 +70,9 @@ let router = RequestRouter(
     search: SearchService(pool: readers),
     capture: SystemCaptureControl(monitor: monitor),
     startedAt: Date(),
-    dataDirectory: MuninnPaths.applicationSupportDir
+    dataDirectory: MuninnPaths.applicationSupportDir,
+    databasePath: MuninnPaths.databasePath,
+    memoryFootprint: currentFootprint
 )
 
 // Persist observed changes in order. Capture never waits on this: the

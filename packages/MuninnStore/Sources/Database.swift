@@ -115,6 +115,30 @@ public final class Database {
         return try body()
     }
 
+    /// Reads up to `length` bytes at `offset` of one TEXT or BLOB value,
+    /// without loading the rest of it (incremental BLOB I/O). Returns the
+    /// bytes and the value's total size. TEXT comes back as stored (UTF-8).
+    public func readBytes(table: String, column: String, rowID: Int64, offset: Int, length: Int) throws -> (data: Data, total: Int) {
+        var blob: OpaquePointer?
+        let rc = sqlite3_blob_open(handle, "main", table, column, rowID, 0, &blob)
+        guard rc == SQLITE_OK, let blob else {
+            sqlite3_blob_close(blob)
+            throw DatabaseError(code: rc, message: lastErrorMessage)
+        }
+        defer { sqlite3_blob_close(blob) }
+        let total = Int(sqlite3_blob_bytes(blob))
+        let start = min(max(0, offset), total)
+        let count = min(max(0, length), total - start)
+        var data = Data(count: count)
+        if count > 0 {
+            let readRC = data.withUnsafeMutableBytes { buffer in
+                sqlite3_blob_read(blob, buffer.baseAddress, Int32(count), Int32(start))
+            }
+            guard readRC == SQLITE_OK else { throw DatabaseError(code: readRC, message: lastErrorMessage) }
+        }
+        return (data, total)
+    }
+
     fileprivate var lastErrorMessage: String { String(cString: sqlite3_errmsg(handle)) }
     fileprivate var lastErrorCode: Int32 { sqlite3_errcode(handle) }
 

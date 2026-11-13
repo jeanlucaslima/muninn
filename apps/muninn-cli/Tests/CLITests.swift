@@ -76,12 +76,18 @@ final class MockHelper {
     let log = RequestLog()
     private let server: IPCServer
 
-    init(_ responses: [IPCMethod: Data]) throws {
+    convenience init(_ responses: [IPCMethod: Data]) throws {
+        try self.init { method, _ in responses[method] }
+    }
+
+    /// Answers each request from `respond`; nil means "unmocked".
+    init(_ respond: @escaping @Sendable (IPCMethod, Data) async -> Data?) throws {
         let log = self.log
         server = IPCServer(socketPath: socketPath) { data in
             await log.append(data)
             let method = (try? MuninnJSON.decoder().decode(IPCRequestHeader.self, from: data)).flatMap { IPCMethod(rawValue: $0.method) }
-            return method.flatMap { responses[$0] } ?? encode(IPCResponse<NoParams>.failure(IPCFailure(.unsupported, "unmocked")))
+            if let method, let response = await respond(method, data) { return response }
+            return encode(IPCResponse<NoParams>.failure(IPCFailure(.unsupported, "unmocked")))
         }
         try server.start()
     }
@@ -129,6 +135,8 @@ struct ArgumentTests {
         ["list", "--limit", "0"], ["list", "--limit"], ["list", "--limit", "5", "--all"],
         ["list", "--bogus"], ["search"], ["search", "--type", "spreadsheet"],
         ["search", "--since", "yesterday-ish"], ["status", "extra"],
+        ["paste"], ["paste", "3", "--as", "spreadsheet"], ["paste", "3", "--as"],
+        ["doctor", "now"], ["debug"], ["debug", "receive"],
     ])
     func usageErrorsExit1WithNothingOnStdout(arguments: [String]) async {
         let result = await runCLI(arguments)
@@ -347,5 +355,186 @@ struct HelperStateTests {
     @Test func garbledResponseIsIncompatible() async throws {
         let helper = try MockHelper([.status: Data("{\"version\":1}".utf8)])
         #expect(await helper.run(["status"]).exitCode == 8)
+    }
+}
+
+// MARK: - paste, doctor, debug send, limits
+
+@Suite("CLI paste")
+struct PasteTests {
+    @Test func pasteWritesExactBytesAcrossChunks() async throws {
+        // Bytes that aren't valid UTF-8 must come through untouched.
+        let bytes = Data([0xFF, 0x00, 0x0A, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A])
+        let parts = [bytes.prefix(4), bytes.dropFirst(4).prefix(4), bytes.dropFirst(8)].map { Data($0) }
+        let helper = try MockHelper { method, data in
+            guard method == .payload,
+                  let request = try? MuninnJSON.decoder().decode(Envelope<PayloadRequest>.self, from: data).params,
+                  parts.indices.contains(request.chunk) else { return nil }
+            return ok(PayloadChunk(id: request.id, representationID: 77, uti: "public.png", byteSize: Int64(bytes.count),
+                                   chunk: request.chunk, chunkCount: parts.count, data: parts[request.chunk]))
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath())
+        process.arguments = ["paste", "8", "--as", "image"]
+        var env = ProcessInfo.processInfo.environment
+        env["MUNINN_SOCKET_PATH"] = helper.socketPath
+        process.environment = env
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in continuation.resume() }
+            try? process.run()
+        }
+        #expect(process.terminationStatus == 0)
+        #expect(out.fileHandleForReading.readDataToEndOfFile() == bytes)
+
+        let requests = try await helper.log.requests.map { try MuninnJSON.decoder().decode(Envelope<PayloadRequest>.self, from: $0).params }
+        #expect(requests == [
+            PayloadRequest(id: 8, as: "image"),
+            PayloadRequest(id: 8, representationID: 77, chunk: 1),
+            PayloadRequest(id: 8, representationID: 77, chunk: 2),
+        ])
+    }
+
+    @Test func pasteErrorsGoToStderrWithStableExitCodes() async throws {
+        let helper = try MockHelper([.payload: failure(.unsupported, "item 3's representation wasn't stored (omitted: size)")])
+        let result = await helper.run(["paste", "3"])
+        #expect(result.exitCode == 1)
+        #expect(result.stdout.isEmpty)
+        #expect(result.stderr.contains("omitted: size"))
+
+        let missing = try MockHelper([.payload: failure(.notFound, "item 3 has no image representation")])
+        #expect(await missing.run(["paste", "3", "--as", "image"]).exitCode == 2)
+    }
+
+    @Test func aChunkFromAnotherRepresentationIsAnInternalError() async throws {
+        let helper = try MockHelper { method, data in
+            guard method == .payload,
+                  let request = try? MuninnJSON.decoder().decode(Envelope<PayloadRequest>.self, from: data).params else { return nil }
+            return ok(PayloadChunk(id: 1, representationID: request.chunk == 0 ? 5 : 6, uti: "public.png", byteSize: 2,
+                                   chunk: request.chunk, chunkCount: 2, data: Data([1])))
+        }
+        let result = await helper.run(["paste", "1"])
+        #expect(result.exitCode == 7)
+        #expect(result.stderr.contains("wrong chunk"))
+    }
+}
+
+@Suite("CLI doctor")
+struct DoctorTests {
+    func diagnostics(paused: Bool = false, storeErrors: Int = 0, check: [String] = ["ok"]) -> DiagnosticsInfo {
+        var counters = CaptureCounters()
+        counters.storeErrors = storeErrors
+        return DiagnosticsInfo(protocolVersion: MuninnProtocol.version, isDevBuild: true, databaseCheck: check,
+                               searchIndexError: nil, staleIndexItems: 0, isPaused: paused, lastCaptureAt: at,
+                               counters: counters, databaseBytes: 4096, freeDiskBytes: 1 << 30, helperMemoryBytes: 20 << 20)
+    }
+
+    func statuses(_ stdout: String) throws -> [String: String] {
+        let checks = try #require(try json(stdout)["checks"] as? [[String: Any]])
+        return Dictionary(uniqueKeysWithValues: checks.map { ($0["id"] as? String ?? "", $0["status"] as? String ?? "") })
+    }
+
+    @Test func healthyHelperPassesAndUnbuiltChecksAreSkippedNotFaked() async throws {
+        let helper = try MockHelper([.hello: ok(HelloInfo(protocolVersion: MuninnProtocol.version)), .diagnostics: ok(diagnostics())])
+        let human = await helper.run(["doctor"])
+        #expect(human.exitCode == 0)
+        #expect(human.stdout.contains("✓ Helper reachable"))
+        #expect(human.stdout.contains("– Helper registered with SMAppService"))
+        #expect(!human.stdout.contains("✗"))
+
+        let machine = await helper.run(["doctor", "--json"])
+        #expect(machine.exitCode == 0)
+        #expect(try json(machine.stdout)["healthy"] as? Bool == true)
+        let s = try statuses(machine.stdout)
+        #expect(s["helper"] == "pass")
+        #expect(s["database"] == "pass")
+        #expect(s["capture"] == "pass")
+        #expect(s["install"] == "skip")
+        #expect(s["jobs"] == "skip")
+    }
+
+    @Test(arguments: [(true, 0, ["ok"], "capture"), (false, 2, ["ok"], "capture"), (false, 0, ["row 3 missing"], "database")])
+    func problemsExit5WithAFix(paused: Bool, storeErrors: Int, check: [String], failing: String) async throws {
+        let helper = try MockHelper([.hello: ok(HelloInfo(protocolVersion: MuninnProtocol.version)),
+                                     .diagnostics: ok(diagnostics(paused: paused, storeErrors: storeErrors, check: check))])
+        let result = await helper.run(["doctor"])
+        #expect(result.exitCode == 5)
+        #expect(result.stdout.contains("✗"))
+        #expect(result.stdout.contains("fix:"))
+        #expect(try statuses(await helper.run(["doctor", "--json"]).stdout)[failing] == "fail")
+    }
+
+    @Test func unreachableHelperIsAFailedCheckNotExit3() async throws {
+        let result = await runCLI(["doctor", "--json"])
+        #expect(result.exitCode == 5)
+        let s = try statuses(result.stdout)
+        #expect(s["helper"] == "fail")
+        #expect(s["capture"] == "skip")
+    }
+
+    @Test func incompatibleHelperFailsTheVersionCheck() async throws {
+        let helper = try MockHelper([.hello: failure(.incompatible, "protocol version 2 isn't supported")])
+        let result = await helper.run(["doctor", "--json"])
+        #expect(result.exitCode == 5)
+        #expect(try statuses(result.stdout)["version"] == "fail")
+    }
+}
+
+@Suite("CLI debug send and limits")
+struct DebugAndLimitsTests {
+    @Test func debugSendRelaysEachLineAndAddsTheVersion() async throws {
+        let helper = try MockHelper { method, _ in method == .hello ? ok(HelloInfo(protocolVersion: 2)) : nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath())
+        process.arguments = ["debug", "send"]
+        var env = ProcessInfo.processInfo.environment
+        env["MUNINN_SOCKET_PATH"] = helper.socketPath
+        process.environment = env
+        let input = Pipe(), out = Pipe(), err = Pipe()
+        process.standardInput = input
+        process.standardOutput = out
+        process.standardError = err
+        // Attached before run(), so a fast exit can't be missed; the stream buffers it.
+        let exited = AsyncStream<Void> { continuation in
+            process.terminationHandler = { _ in continuation.yield(); continuation.finish() }
+        }
+        try process.run()
+        input.fileHandleForWriting.write(Data("""
+            {"method":"hello","params":{}}
+
+            not json
+            {"method":"teleport","params":{},"version":2}
+
+            """.utf8))
+        try input.fileHandleForWriting.close()
+        for await _ in exited { break }
+
+        #expect(process.terminationStatus == 1) // one bad line
+        let lines = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n")
+        #expect(lines.count == 2)
+        #expect(lines.first?.contains("\"protocolVersion\":2") == true)
+        #expect(lines.last?.contains("unmocked") == true)
+        #expect(String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).contains("not a JSON object"))
+        let versions = await helper.log.requests.compactMap { try? MuninnJSON.decoder().decode(IPCRequestHeader.self, from: $0).version }
+        #expect(versions == [MuninnProtocol.version, 2])
+    }
+
+    @Test func limitsNeedNoHelper() async throws {
+        let human = await runCLI(["status", "--limits"])
+        #expect(human.exitCode == 0)
+        #expect(human.stdout.contains("maxRequestBytes"))
+        #expect(human.stdout.contains("pollInterval"))
+
+        let machine = await runCLI(["status", "--limits", "--json"])
+        let limits = try #require(try json(machine.stdout)["limits"] as? [[String: Any]])
+        #expect(limits.count == MuninnLimits.catalog.count)
+        #expect(limits.first { $0["name"] as? String == "pollInterval" }?["value"] as? Int == 500)
+    }
+
+    @Test func noInteractiveIsAcceptedEverywhere() async throws {
+        let helper = try MockHelper([.list: ok(ItemPage(items: [], total: 0, hasMore: false))])
+        #expect(await helper.run(["list", "--no-interactive"]).exitCode == 0)
     }
 }

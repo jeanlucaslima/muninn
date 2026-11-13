@@ -1,7 +1,7 @@
 import Foundation
 
 // v2 IPC messages (design §4.6, §4.11). One JSON request per connection:
-//   {"method": "<name>", "params": {...}}
+//   {"version": <protocol version>, "method": "<name>", "params": {...}}
 // and one JSON response:
 //   {"ok": true, "data": {...}}  or  {"ok": false, "error": {"code": "...", "message": "..."}}
 // The transport is still v1's Unix socket until D21 / PROOF-002 decide.
@@ -14,21 +14,26 @@ public enum MuninnProtocol {
 }
 
 public enum IPCMethod: String, Codable, Sendable, CaseIterable {
-    case hello, status, list, search, get, history, copy, pause, resume, pin, unpin, delete
+    case hello, status, diagnostics, list, search, get, history, payload, copy, pause, resume, pin, unpin, delete
 }
 
 public struct IPCRequest<Params: Codable & Sendable>: Codable, Sendable {
+    /// The sender's `MuninnProtocol.version`; the helper refuses any other
+    /// with `incompatible` (§4.6 version handshake).
+    public let version: Int
     public let method: String
     public let params: Params
 
     public init(_ method: IPCMethod, _ params: Params) {
+        self.version = MuninnProtocol.version
         self.method = method.rawValue
         self.params = params
     }
 }
 
-/// Decodes just the method name, before the params type is known.
+/// Decodes the version and method name, before the params type is known.
 public struct IPCRequestHeader: Decodable, Sendable {
+    public let version: Int?
     public let method: String
 }
 
@@ -196,6 +201,86 @@ public struct HistoryInfo: Codable, Sendable, Equatable {
     public init(id: Int64, events: [CaptureEventInfo]) {
         self.id = id
         self.events = events
+    }
+}
+
+/// Asks for one chunk of one representation's bytes, for `paste` (§4.11).
+/// The first request picks the representation (`as`); later ones pin it by
+/// `representationID`, so every chunk comes from the same bytes.
+public struct PayloadRequest: Codable, Sendable, Equatable {
+    public let id: Int64
+    /// A kind (`text`, `image`, …) or a UTI; nil means the primary representation.
+    public let `as`: String?
+    public let representationID: Int64?
+    public let chunk: Int
+
+    public init(id: Int64, as selector: String? = nil, representationID: Int64? = nil, chunk: Int = 0) {
+        self.id = id
+        self.as = selector
+        self.representationID = representationID
+        self.chunk = chunk
+    }
+}
+
+/// One chunk of a representation's raw bytes. Bounded by
+/// `MuninnLimits.payloadChunkBytes`; the CLI asks until `chunk == chunkCount - 1`.
+/// Stands in for the streamed payloads of §4.6 until D21 decides the transport.
+public struct PayloadChunk: Codable, Sendable, Equatable {
+    public let id: Int64
+    public let representationID: Int64
+    public let uti: String
+    public let byteSize: Int64
+    public let chunk: Int
+    public let chunkCount: Int
+    public let data: Data
+
+    public init(id: Int64, representationID: Int64, uti: String, byteSize: Int64, chunk: Int, chunkCount: Int, data: Data) {
+        self.id = id
+        self.representationID = representationID
+        self.uti = uti
+        self.byteSize = byteSize
+        self.chunk = chunk
+        self.chunkCount = chunkCount
+        self.data = data
+    }
+}
+
+/// What `doctor` needs from the helper (§4.11 doctor checks).
+public struct DiagnosticsInfo: Codable, Sendable, Equatable {
+    public let protocolVersion: Int
+    public let isDevBuild: Bool
+    /// `PRAGMA quick_check` rows: `["ok"]` when the database is sound.
+    public let databaseCheck: [String]
+    /// nil when the search index passes FTS5 `integrity-check`; the error otherwise.
+    public let searchIndexError: String?
+    /// Items whose index rows are missing or from an older index version.
+    public let staleIndexItems: Int
+    public let isPaused: Bool
+    public let lastCaptureAt: Date?
+    public let counters: CaptureCounters
+    /// Database plus WAL file size.
+    public let databaseBytes: Int64
+    /// Free space on the data directory's volume; nil if unknown.
+    public let freeDiskBytes: Int64?
+    /// The helper's physical footprint; nil if unknown.
+    public let helperMemoryBytes: Int64?
+
+    public init(
+        protocolVersion: Int, isDevBuild: Bool, databaseCheck: [String], searchIndexError: String?,
+        staleIndexItems: Int, isPaused: Bool, lastCaptureAt: Date?, counters: CaptureCounters,
+        databaseBytes: Int64, freeDiskBytes: Int64?, helperMemoryBytes: Int64?
+    ) {
+        self.protocolVersion = protocolVersion
+        self.isDevBuild = isDevBuild
+        self.databaseCheck = databaseCheck
+        self.searchIndexError = searchIndexError
+        self.staleIndexItems = staleIndexItems
+        self.isPaused = isPaused
+        self.lastCaptureAt = lastCaptureAt
+        self.counters = counters
+        self.databaseBytes = databaseBytes
+        self.freeDiskBytes = freeDiskBytes
+        self.helperMemoryBytes = helperMemoryBytes
     }
 }
 

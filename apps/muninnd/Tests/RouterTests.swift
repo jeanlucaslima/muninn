@@ -38,7 +38,8 @@ final class Helper {
         let readers = try ReaderPool(path: path)
         router = RequestRouter(
             writer: writer, readers: readers, search: SearchService(pool: readers),
-            capture: capture, startedAt: Date(), dataDirectory: directory.path)
+            capture: capture, startedAt: Date(), dataDirectory: directory.path,
+            databasePath: path, memoryFootprint: { 42 })
     }
 
     deinit {
@@ -157,8 +158,67 @@ struct RouterTests {
     @Test func badRequestsGetStableCodes() async throws {
         let h = try Helper()
         #expect(try await h.raw("not json").error?.code == .invalidRequest)
-        #expect(try await h.raw(#"{"method":"teleport","params":{}}"#).error?.code == .unsupported)
-        #expect(try await h.raw(#"{"method":"get","params":{"id":"seven"}}"#).error?.code == .invalidRequest)
+        #expect(try await h.raw(#"{"version":2,"method":"teleport","params":{}}"#).error?.code == .unsupported)
+        #expect(try await h.raw(#"{"version":2,"method":"get","params":{"id":"seven"}}"#).error?.code == .invalidRequest)
         #expect(try await h.call(.search, SearchRequest(limit: 0), as: ItemPage.self).error?.code == .invalidRequest)
+    }
+
+    @Test func otherProtocolVersionsAreIncompatible() async throws {
+        let h = try Helper()
+        let missing = try await h.raw(#"{"method":"status","params":{}}"#)
+        #expect(missing.error?.code == .incompatible)
+        let newer = try await h.raw(#"{"version":99,"method":"status","params":{}}"#)
+        #expect(newer.error?.code == .incompatible)
+        #expect(newer.error?.message.contains("99") == true)
+        // The version is checked before the method: an unknown method from another version is still incompatible.
+        #expect(try await h.raw(#"{"version":1,"method":"teleport","params":{}}"#).error?.code == .incompatible)
+    }
+
+    @Test func payloadServesBytesAndStableCodes() async throws {
+        let h = try Helper()
+        let id = try await h.add("paste me")
+        let chunk = try await h.call(.payload, PayloadRequest(id: id), as: PayloadChunk.self).get()
+        #expect(chunk.data == Data("paste me".utf8))
+        #expect(chunk.chunkCount == 1)
+        #expect(chunk.uti == "public.utf8-plain-text")
+
+        let pinned = try await h.call(.payload, PayloadRequest(id: id, representationID: chunk.representationID), as: PayloadChunk.self).get()
+        #expect(pinned == chunk)
+
+        #expect(try await h.call(.payload, PayloadRequest(id: id, as: "image"), as: PayloadChunk.self).error?.code == .notFound)
+        #expect(try await h.call(.payload, PayloadRequest(id: id, chunk: 1), as: PayloadChunk.self).error?.code == .invalidRequest)
+        #expect(try await h.call(.payload, PayloadRequest(id: 999), as: PayloadChunk.self).error?.code == .notFound)
+
+        let omitted = try await h.writer.capture(CaptureInput(
+            capturedAt: Date(), source: .unknown, changeCount: nil, availableTypes: ["public.png"],
+            representations: [RepresentationInput(uti: "public.png", role: .primary, payload: .omitted(.size))]
+        )).itemID
+        let refused = try await h.call(.payload, PayloadRequest(id: omitted), as: PayloadChunk.self)
+        #expect(refused.error?.code == .unsupported)
+        #expect(refused.error?.message.contains("size") == true)
+    }
+
+    @Test func payloadOfAProtectedItemIsNotFound() async throws {
+        let h = try Helper()
+        let secret = try await h.add("secret")
+        try await h.writer.setProtected(secret, true)
+        let response = try await h.call(.payload, PayloadRequest(id: secret), as: PayloadChunk.self)
+        #expect(response.error?.code == .notFound)
+        #expect(response.error?.message.contains("secret") == false)
+    }
+
+    @Test func diagnosticsReportStoreAndCapture() async throws {
+        let h = try Helper()
+        try await h.add("one")
+        let d = try await h.call(.diagnostics, NoParams(), as: DiagnosticsInfo.self).get()
+        #expect(d.protocolVersion == MuninnProtocol.version)
+        #expect(d.databaseCheck == ["ok"])
+        #expect(d.searchIndexError == nil)
+        #expect(d.staleIndexItems == 0)
+        #expect(d.lastCaptureAt != nil)
+        #expect(d.isPaused == false)
+        #expect(d.counters.observedChanges == 3)
+        #expect(d.databaseBytes > 0)
+        #expect(d.helperMemoryBytes == 42)
     }
 }

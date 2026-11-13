@@ -45,6 +45,15 @@ public struct ReaderPool: Sendable {
     }
 }
 
+public enum PayloadResult: Sendable, Equatable {
+    case chunk(PayloadChunk)
+    /// No representation matches the selector (or the pinned id).
+    case noSuchRepresentation
+    /// The matching representation's bytes weren't stored.
+    case omitted(OmitReason)
+    case chunkOutOfRange
+}
+
 /// Item reads shared by search, the CLI and the panel. All take a connection
 /// so callers can group them in one read transaction.
 public enum ItemQueries {
@@ -159,6 +168,96 @@ public enum ItemQueries {
             try body(stmt.row.blob(0) ?? Data())
         }
         return true
+    }
+
+    // MARK: - Payload (paste)
+
+    /// One chunk of one representation's bytes (§4.11 `paste`). `selector` is
+    /// nil for the primary, a kind, or a UTI; `representationID`, when given,
+    /// pins the representation chosen by an earlier chunk. nil if the item
+    /// doesn't exist.
+    ///
+    /// Text and file references are sliced by `textChunkBytes` straight from
+    /// the row; assets go out one stored chunk at a time. Neither loads the
+    /// whole value.
+    public static func payload(
+        _ db: Database, id: Int64, selector: String?, representationID: Int64?, chunk: Int,
+        textChunkBytes: Int = MuninnLimits.payloadChunkBytes
+    ) throws -> PayloadResult? {
+        try db.readTransaction {
+            guard try db.queryOne("SELECT 1 FROM content_items WHERE id = ?", [.int(id)], { _ in true }) != nil else {
+                return nil
+            }
+            struct Rep { let id: Int64; let uti: String; let role: String; let hasText: Bool; let assetID: Int64?; let hasURL: Bool; let omitted: String? }
+            let reps = try db.query("""
+                SELECT id, uti, role, text IS NOT NULL, asset_id, url IS NOT NULL, omitted
+                FROM representations WHERE content_item_id = ?
+                ORDER BY role = 'primary' DESC, id
+                """, [.int(id)]) { row in
+                Rep(id: row.int(0), uti: row.text(1) ?? "", role: row.text(2) ?? "", hasText: row.int(3) != 0,
+                    assetID: row.optionalInt(4), hasURL: row.int(5) != 0, omitted: row.text(6))
+            }
+
+            let matching: [Rep]
+            if let representationID {
+                matching = reps.filter { $0.id == representationID }
+            } else if let selector {
+                if let kind = ItemKind(rawValue: selector) {
+                    matching = reps.filter { Identity.kind(forUTI: $0.uti) == kind }
+                } else {
+                    matching = reps.filter { $0.uti == selector }
+                }
+            } else {
+                matching = reps.filter { $0.role == RepresentationRole.primary.rawValue }
+            }
+            guard !matching.isEmpty else { return .noSuchRepresentation }
+            // Prefer stored bytes over an omitted match of the same kind.
+            guard let rep = matching.first(where: { $0.omitted == nil }) else {
+                return .omitted(OmitReason(rawValue: matching[0].omitted ?? "") ?? .size)
+            }
+            guard chunk >= 0 else { return .chunkOutOfRange }
+
+            if rep.hasText || rep.hasURL {
+                let column = rep.hasText ? "text" : "url"
+                let read = try db.readBytes(table: "representations", column: column, rowID: rep.id,
+                                            offset: chunk * textChunkBytes, length: textChunkBytes)
+                let count = max(1, (read.total + textChunkBytes - 1) / textChunkBytes)
+                guard chunk < count else { return .chunkOutOfRange }
+                return .chunk(PayloadChunk(id: id, representationID: rep.id, uti: rep.uti, byteSize: Int64(read.total),
+                                           chunk: chunk, chunkCount: count, data: read.data))
+            }
+            if let assetID = rep.assetID {
+                guard let (size, count) = try db.queryOne(
+                    "SELECT byte_size, (SELECT COUNT(*) FROM asset_chunks WHERE asset_id = assets.id) FROM assets WHERE id = ?",
+                    [.int(assetID)], { ($0.int(0), Int($0.int(1))) }) else {
+                    return .noSuchRepresentation
+                }
+                guard chunk < count else { return .chunkOutOfRange }
+                let data = try db.queryOne("SELECT data FROM asset_chunks WHERE asset_id = ? AND idx = ?",
+                                           [.int(assetID), .int(Int64(chunk))]) { $0.blob(0) ?? Data() } ?? Data()
+                return .chunk(PayloadChunk(id: id, representationID: rep.id, uti: rep.uti, byteSize: size,
+                                           chunk: chunk, chunkCount: count, data: data))
+            }
+            return .noSuchRepresentation
+        }
+    }
+
+    // MARK: - Diagnostics (doctor)
+
+    /// `PRAGMA quick_check` rows; `["ok"]` when sound.
+    public static func quickCheck(_ db: Database) throws -> [String] {
+        try db.query("PRAGMA quick_check") { $0.text(0) ?? "" }
+    }
+
+    /// Items whose search index rows are missing or from an older index version.
+    public static func staleIndexCount(_ db: Database) throws -> Int {
+        Int(try db.queryOne(
+            "SELECT COUNT(*) FROM content_items WHERE indexed_version IS NULL OR indexed_version != ?",
+            [.int(Schema.indexVersion)]) { $0.int(0) } ?? 0)
+    }
+
+    public static func lastCaptureAt(_ db: Database) throws -> Date? {
+        try db.queryOne("SELECT MAX(captured_at) FROM capture_events") { $0.optionalInt(0) }?.map(Timestamp.date)
     }
 
     // MARK: - Private

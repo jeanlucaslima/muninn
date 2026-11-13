@@ -27,7 +27,38 @@ public enum MuninnLimits {
     public static let maxPendingCaptures = 8
     /// Largest IPC request accepted.
     public static let maxRequestBytes = 1024 * 1024
+    /// Largest `payload` chunk of text or a file reference; asset chunks go
+    /// out as stored (`assetChunkBytes`).
+    public static let payloadChunkBytes = 256 * 1024
 
     /// Pasteboard polling interval (D6).
     public static let pollInterval: Duration = .milliseconds(500)
+
+    /// Every limit, for `muninn status --limits`. Keep in step with the values above.
+    public static let catalog: [LimitInfo] = [
+        LimitInfo("defaultResultLimit", Int64(defaultResultLimit), "items"),
+        LimitInfo("previewCharacters", Int64(previewCharacters), "characters"),
+        LimitInfo("assetChunkBytes", Int64(assetChunkBytes), "bytes"),
+        LimitInfo("indexRowsPerItem", Int64(indexRowsPerItem), "rows"),
+        LimitInfo("maxRepresentationBytes", Int64(maxRepresentationBytes), "bytes"),
+        LimitInfo("maxCaptureBytes", Int64(maxCaptureBytes), "bytes"),
+        LimitInfo("maxFileReferences", Int64(maxFileReferences), "files"),
+        LimitInfo("maxPendingCaptures", Int64(maxPendingCaptures), "captures"),
+        LimitInfo("maxRequestBytes", Int64(maxRequestBytes), "bytes"),
+        LimitInfo("payloadChunkBytes", Int64(payloadChunkBytes), "bytes"),
+        LimitInfo("pollInterval", pollInterval.components.seconds * 1000
+            + pollInterval.components.attoseconds / 1_000_000_000_000_000, "milliseconds"),
+    ]
+}
+
+public struct LimitInfo: Codable, Sendable, Equatable {
+    public let name: String
+    public let value: Int64
+    public let unit: String
+
+    public init(_ name: String, _ value: Int64, _ unit: String) {
+        self.name = name
+        self.value = value
+        self.unit = unit
+    }
 }

@@ -26,10 +26,18 @@ struct RequestRouter: Sendable {
     let capture: any CaptureControl
     let startedAt: Date
     let dataDirectory: String
+    let databasePath: String
+    /// The helper's physical memory footprint, for `doctor`; nil if unknown.
+    let memoryFootprint: @Sendable () -> Int64?
 
     func handle(_ data: Data) async -> Data {
         do {
             let header = try MuninnJSON.decoder().decode(IPCRequestHeader.self, from: data)
+            guard header.version == MuninnProtocol.version else {
+                let theirs = header.version.map(String.init) ?? "none"
+                throw IPCFailure(.incompatible,
+                    "protocol version \(theirs) isn't supported; this helper speaks version \(MuninnProtocol.version)")
+            }
             guard let method = IPCMethod(rawValue: header.method) else {
                 throw IPCFailure(.unsupported, "unknown method: \(header.method)")
             }
@@ -64,6 +72,33 @@ struct RequestRouter: Sendable {
                 counters: state.counters
             ))
 
+        case .diagnostics:
+            let state = await capture.state()
+            let (check, stale, lastCapture) = try await readers.read { db in
+                (try ItemQueries.quickCheck(db), try ItemQueries.staleIndexCount(db), try ItemQueries.lastCaptureAt(db))
+            }
+            let indexError = await writer.searchIndexError()
+            let fm = FileManager.default
+            let databaseBytes = [databasePath, databasePath + "-wal"].reduce(Int64(0)) { sum, path in
+                sum + ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
+            }
+            let free = (try? URL(fileURLWithPath: dataDirectory)
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage
+            return ok(DiagnosticsInfo(
+                protocolVersion: MuninnProtocol.version,
+                isDevBuild: MuninnPaths.isDevBuild,
+                databaseCheck: check,
+                searchIndexError: indexError,
+                staleIndexItems: stale,
+                isPaused: state.isPaused,
+                lastCaptureAt: lastCapture,
+                counters: state.counters,
+                databaseBytes: databaseBytes,
+                freeDiskBytes: free,
+                helperMemoryBytes: memoryFootprint()
+            ))
+
         case .list:
             var request = try params(SearchRequest.self, data)
             request.query = nil
@@ -92,6 +127,28 @@ struct RequestRouter: Sendable {
                 throw notFound(id)
             }
             return ok(HistoryInfo(id: id, events: events))
+
+        case .payload:
+            let request = try params(PayloadRequest.self, data)
+            let id = request.id
+            guard let result = try await readers.read({ db -> PayloadResult? in
+                guard let detail = try ItemQueries.detail(db, id: id), !detail.summary.isProtected else { return nil }
+                return try ItemQueries.payload(db, id: id, selector: request.as,
+                                               representationID: request.representationID, chunk: request.chunk)
+            }) else {
+                throw notFound(id)
+            }
+            switch result {
+            case .chunk(let chunk):
+                return ok(chunk)
+            case .noSuchRepresentation:
+                let what = request.as.map { "\($0) representation" } ?? "primary representation"
+                throw IPCFailure(.notFound, "item \(id) has no \(what)")
+            case .omitted(let reason):
+                throw IPCFailure(.unsupported, "item \(id)'s representation wasn't stored (omitted: \(reason.rawValue))")
+            case .chunkOutOfRange:
+                throw IPCFailure(.invalidRequest, "chunk \(request.chunk) is out of range")
+            }
 
         case .copy:
             let id = try params(ItemIDParams.self, data).id

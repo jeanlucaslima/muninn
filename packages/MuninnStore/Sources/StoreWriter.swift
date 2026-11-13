@@ -154,6 +154,19 @@ public actor StoreWriter {
         return deleted
     }
 
+    // MARK: - Diagnostics
+
+    /// Runs FTS5 `integrity-check` on the search index: nil when it passes,
+    /// the error otherwise. It needs the write connection (it's an INSERT).
+    public func searchIndexError() -> String? {
+        do {
+            try db.run("INSERT INTO search_index (search_index, rank) VALUES ('integrity-check', 1)")
+            return nil
+        } catch {
+            return "\(error)"
+        }
+    }
+
     // MARK: - Private
 
     private func insertEvent(_ input: CaptureInput, itemID: Int64) throws -> Int64 {

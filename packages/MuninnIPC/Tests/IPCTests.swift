@@ -115,7 +115,7 @@ struct IPCMessageTests {
 
     @Test func requestsEncodeMethodAndParams() throws {
         let data = try MuninnJSON.encoder().encode(IPCRequest(.get, ItemIDParams(id: 7)))
-        #expect(String(decoding: data, as: UTF8.self) == #"{"method":"get","params":{"id":7}}"#)
+        #expect(String(decoding: data, as: UTF8.self) == #"{"method":"get","params":{"id":7},"version":2}"#)
         #expect(try MuninnJSON.decoder().decode(IPCRequestHeader.self, from: data).method == "get")
     }
 }
