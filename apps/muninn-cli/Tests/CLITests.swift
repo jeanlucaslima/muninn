@@ -327,12 +327,16 @@ struct HelperStateTests {
         var counters = CaptureCounters()
         counters.missedChanges = 4
         let status = StatusInfo(protocolVersion: 2, itemCount: 12, isPaused: false, uptimeSeconds: 60,
-                                dataDirectory: "/tmp/x", isDevBuild: true, counters: counters)
+                                dataDirectory: "/tmp/x", isDevBuild: true, counters: counters,
+                                lastCaptureAt: nil, databaseBytes: 2048, helperMemoryBytes: 10 << 20)
         let helper = try MockHelper([.status: ok(status)])
         let out = await helper.run(["status"]).stdout
         #expect(out.contains("items:     12"))
         #expect(out.contains("missed 4"))
         #expect(out.contains("(dev build)"))
+        #expect(out.contains("nothing captured yet"))
+        #expect(out.contains("2 KB"))
+        #expect(out.contains("protocol \(MuninnProtocol.version)"))
         let output = try json(await helper.run(["status", "--json"]).stdout)
         #expect((output["counters"] as? [String: Any])?["missedChanges"] as? Int == 4)
     }

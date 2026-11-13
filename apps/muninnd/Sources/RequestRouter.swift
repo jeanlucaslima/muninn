@@ -61,7 +61,9 @@ struct RequestRouter: Sendable {
 
         case .status:
             let state = await capture.state()
-            let count = try await readers.read { try ItemQueries.itemCount($0) }
+            let (count, lastCapture) = try await readers.read {
+                (try ItemQueries.itemCount($0), try ItemQueries.lastCaptureAt($0))
+            }
             return ok(StatusInfo(
                 protocolVersion: MuninnProtocol.version,
                 itemCount: count,
@@ -69,7 +71,10 @@ struct RequestRouter: Sendable {
                 uptimeSeconds: Int(Date().timeIntervalSince(startedAt)),
                 dataDirectory: dataDirectory,
                 isDevBuild: MuninnPaths.isDevBuild,
-                counters: state.counters
+                counters: state.counters,
+                lastCaptureAt: lastCapture,
+                databaseBytes: databaseBytes(),
+                helperMemoryBytes: memoryFootprint()
             ))
 
         case .diagnostics:
@@ -78,10 +83,6 @@ struct RequestRouter: Sendable {
                 (try ItemQueries.quickCheck(db), try ItemQueries.staleIndexCount(db), try ItemQueries.lastCaptureAt(db))
             }
             let indexError = await writer.searchIndexError()
-            let fm = FileManager.default
-            let databaseBytes = [databasePath, databasePath + "-wal"].reduce(Int64(0)) { sum, path in
-                sum + ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
-            }
             let free = (try? URL(fileURLWithPath: dataDirectory)
                 .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage
@@ -94,7 +95,7 @@ struct RequestRouter: Sendable {
                 isPaused: state.isPaused,
                 lastCaptureAt: lastCapture,
                 counters: state.counters,
-                databaseBytes: databaseBytes,
+                databaseBytes: databaseBytes(),
                 freeDiskBytes: free,
                 helperMemoryBytes: memoryFootprint()
             ))
@@ -181,6 +182,13 @@ struct RequestRouter: Sendable {
             let id = try params(ItemIDParams.self, data).id
             guard try await writer.delete(id) else { throw notFound(id) }
             return ok(ItemRef(id: id))
+        }
+    }
+
+    /// Database plus WAL file size.
+    private func databaseBytes() -> Int64 {
+        [databasePath, databasePath + "-wal"].reduce(Int64(0)) { sum, path in
+            sum + ((try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
         }
     }
 

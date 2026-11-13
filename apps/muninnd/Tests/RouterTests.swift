@@ -78,6 +78,10 @@ struct RouterTests {
         #expect(status.isPaused == false)
         #expect(status.counters.observedChanges == 3)
         #expect(status.isDevBuild)
+        #expect(status.helperVersion == MuninnProtocol.productVersion)
+        #expect(status.lastCaptureAt != nil)
+        #expect(status.databaseBytes > 0)
+        #expect(status.helperMemoryBytes == 42)
     }
 
     @Test func listAndSearchGoThroughSearchService() async throws {

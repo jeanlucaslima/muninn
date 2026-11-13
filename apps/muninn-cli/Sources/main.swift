@@ -12,7 +12,6 @@ import MuninnIPC
 // nothing to refuse yet), status --audit (no audit log), and open (needs the
 // app bundle's muninn:// URL scheme, gate C).
 
-let cliVersion = "2.0.0-dev"
 
 let usage = """
     muninn: clipboard memory
@@ -271,7 +270,7 @@ do {
 }
 
 if args.switches.contains("--version") {
-    print("muninn \(cliVersion)")
+    print("muninn \(MuninnProtocol.productVersion)")
     exit(0)
 }
 if args.switches.contains("--help") || args.switches.contains("-h") {
@@ -305,11 +304,14 @@ case "status":
     let status = call(.status, NoParams(), as: StatusInfo.self)
     if jsonMode { printJSON(status); break }
     let c = status.counters
+    let last = status.lastCaptureAt.map { ", last capture \(shortDate($0))" } ?? ", nothing captured yet"
+    let memory = status.helperMemoryBytes.map { ", \(bytes($0)) memory" } ?? ""
     print("""
-        helper:    running\(status.isDevBuild ? " (dev build)" : ""), up \(status.uptimeSeconds)s
-        capture:   \(status.isPaused ? "paused" : "active")
+        helper:    \(status.helperVersion)\(status.isDevBuild ? " (dev build)" : ""), up \(status.uptimeSeconds)s\(memory)
+        cli:       \(MuninnProtocol.productVersion), protocol \(MuninnProtocol.version)
+        capture:   \(status.isPaused ? "paused" : "active")\(last)
         items:     \(status.itemCount)
-        data:      \(status.dataDirectory)
+        data:      \(status.dataDirectory) (\(bytes(status.databaseBytes)))
         counters:  observed \(c.observedChanges), missed \(c.missedChanges), dropped \(c.droppedBackpressure), \
         too large \(c.omittedBySize), unsupported \(c.skippedUnsupported), self-copies \(c.selfCopies), \
         store errors \(c.storeErrors)

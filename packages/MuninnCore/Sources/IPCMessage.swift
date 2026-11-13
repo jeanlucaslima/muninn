@@ -7,6 +7,8 @@ import Foundation
 // The transport is still v1's Unix socket until D21 / PROOF-002 decide.
 
 public enum MuninnProtocol {
+    /// The product version shared by the CLI, helper and app (one bundle, §4.10).
+    public static let productVersion = "2.0.0-dev"
     /// Bumped on any incompatible message change; `hello` reports it.
     public static let version = 2
     /// `schemaVersion` carried by every CLI `--json` output.
@@ -168,6 +170,7 @@ public struct CaptureCounters: Codable, Sendable, Equatable {
 }
 
 public struct StatusInfo: Codable, Sendable, Equatable {
+    public let helperVersion: String
     public let protocolVersion: Int
     public let itemCount: Int
     public let isPaused: Bool
@@ -175,11 +178,22 @@ public struct StatusInfo: Codable, Sendable, Equatable {
     public let dataDirectory: String
     public let isDevBuild: Bool
     public let counters: CaptureCounters
+    public let lastCaptureAt: Date?
+    /// Database plus WAL file size.
+    public let databaseBytes: Int64
+    /// The helper's physical footprint; nil if unknown.
+    public let helperMemoryBytes: Int64?
 
     public init(
+        helperVersion: String = MuninnProtocol.productVersion,
         protocolVersion: Int, itemCount: Int, isPaused: Bool, uptimeSeconds: Int,
-        dataDirectory: String, isDevBuild: Bool, counters: CaptureCounters
+        dataDirectory: String, isDevBuild: Bool, counters: CaptureCounters,
+        lastCaptureAt: Date? = nil, databaseBytes: Int64 = 0, helperMemoryBytes: Int64? = nil
     ) {
+        self.helperVersion = helperVersion
+        self.lastCaptureAt = lastCaptureAt
+        self.databaseBytes = databaseBytes
+        self.helperMemoryBytes = helperMemoryBytes
         self.protocolVersion = protocolVersion
         self.itemCount = itemCount
         self.isPaused = isPaused
