@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/history.json",
+  "title": "history.json",
+  "description": "muninn history <id> --json: the item's capture events, oldest first.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "id": {
+      "$ref": "common.json#/$defs/id"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "common.json#/$defs/captureEvent"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "events"
+  ],
+  "additionalProperties": false
+}

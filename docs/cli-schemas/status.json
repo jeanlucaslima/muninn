@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/status.json",
+  "title": "status.json",
+  "description": "muninn status --json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "helperVersion": {
+      "type": "string"
+    },
+    "protocolVersion": {
+      "type": "integer"
+    },
+    "itemCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "isPaused": {
+      "type": "boolean"
+    },
+    "uptimeSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dataDirectory": {
+      "type": "string"
+    },
+    "isDevBuild": {
+      "type": "boolean"
+    },
+    "counters": {
+      "$ref": "common.json#/$defs/counters"
+    },
+    "lastCaptureAt": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "databaseBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "helperMemoryBytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "helperVersion",
+    "protocolVersion",
+    "itemCount",
+    "isPaused",
+    "uptimeSeconds",
+    "dataDirectory",
+    "isDevBuild",
+    "counters",
+    "databaseBytes"
+  ],
+  "additionalProperties": false
+}

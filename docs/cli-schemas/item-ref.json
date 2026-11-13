@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/item-ref.json",
+  "title": "item-ref.json",
+  "description": "muninn copy | pin | unpin | delete <id> --json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "id": {
+      "$ref": "common.json#/$defs/id"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id"
+  ],
+  "additionalProperties": false
+}

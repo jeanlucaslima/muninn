@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/limits.json",
+  "title": "limits.json",
+  "description": "muninn status --limits --json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "limits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "integer"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "limits"
+  ],
+  "additionalProperties": false
+}

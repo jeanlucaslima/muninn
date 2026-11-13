@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/page.json",
+  "title": "page.json",
+  "description": "muninn list --json and muninn search --json. total counts every match; hasMore says whether items stops short of it (§4.11 contract rule 4).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "common.json#/$defs/itemSummary"
+      }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hasMore": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "items",
+    "total",
+    "hasMore"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/common.json",
+  "title": "common.json",
+  "description": "Definitions shared by the CLI's --json outputs. Optional keys are left out when they have no value; they are never null.",
+  "$defs": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Bumped only for a breaking change; within a version, changes are additive (§4.11 contract rule 1)."
+    },
+    "id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "ISO-8601 UTC with milliseconds."
+    },
+    "kind": {
+      "enum": [
+        "text",
+        "rich_text",
+        "html",
+        "image",
+        "pdf",
+        "file",
+        "other"
+      ]
+    },
+    "itemSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "kind": {
+          "$ref": "common.json#/$defs/kind"
+        },
+        "preview": {
+          "type": "string",
+          "description": "Size-capped preview, never the full content."
+        },
+        "byteSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstCapturedAt": {
+          "$ref": "common.json#/$defs/timestamp"
+        },
+        "lastCapturedAt": {
+          "$ref": "common.json#/$defs/timestamp"
+        },
+        "captureCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "isPinned": {
+          "type": "boolean"
+        },
+        "isProtected": {
+          "type": "boolean"
+        },
+        "sourceBundleID": {
+          "type": "string"
+        },
+        "sourceAppName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "firstCapturedAt",
+        "lastCapturedAt",
+        "captureCount",
+        "isPinned",
+        "isProtected"
+      ],
+      "additionalProperties": false
+    },
+    "representation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "uti": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "alternate"
+          ]
+        },
+        "byteSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted": {
+          "enum": [
+            "size",
+            "timeout",
+            "disk"
+          ],
+          "description": "Present when the bytes weren't stored, with the reason."
+        },
+        "assetID": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "url": {
+          "type": "string",
+          "description": "File URL, for file references."
+        }
+      },
+      "required": [
+        "id",
+        "uti",
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "captureEvent": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "capturedAt": {
+          "$ref": "common.json#/$defs/timestamp"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "bundleID": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "confidence": {
+              "enum": [
+                "high",
+                "low",
+                "unknown",
+                "muninn"
+              ]
+            }
+          },
+          "required": [
+            "confidence"
+          ],
+          "additionalProperties": false
+        },
+        "changeCount": {
+          "type": "integer"
+        },
+        "availableTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "capturedAt",
+        "source",
+        "availableTypes"
+      ],
+      "additionalProperties": false
+    },
+    "counters": {
+      "type": "object",
+      "properties": {
+        "observedChanges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missedChanges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "droppedBackpressure": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selfCopies": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedBySize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skippedUnsupported": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storeErrors": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "observedChanges",
+        "missedChanges",
+        "droppedBackpressure",
+        "selfCopies",
+        "omittedBySize",
+        "skippedUnsupported",
+        "storeErrors"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

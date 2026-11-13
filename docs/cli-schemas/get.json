@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/get.json",
+  "title": "get.json",
+  "description": "muninn get <id> --json. text is the full plain text, never truncated, when the item has one.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/itemSummary"
+    },
+    "representations": {
+      "type": "array",
+      "items": {
+        "$ref": "common.json#/$defs/representation"
+      }
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "summary",
+    "representations"
+  ],
+  "additionalProperties": false
+}

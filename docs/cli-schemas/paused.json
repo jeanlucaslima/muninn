@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muninn.local/cli-schemas/paused.json",
+  "title": "paused.json",
+  "description": "muninn pause | resume --json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "$ref": "common.json#/$defs/schemaVersion"
+    },
+    "isPaused": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "isPaused"
+  ],
+  "additionalProperties": false
+}
