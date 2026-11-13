@@ -15,6 +15,7 @@ Muninn is a pet project, but a serious one. Keep process proportional: enough ri
 | `docs/evidence/PROOF-NNN/<date>/` | Raw evidence from executed proofs |
 | `docs/reviews/` | EGM review findings and how each was resolved |
 | `spikes/` | Throwaway proof code, never production |
+| `scripts/check.sh` | Build and test with module import rules enforced; run before committing |
 | `muninn.md` | The raven ASCII art. **Never modify, move or delete it.** |
 
 ## Hard rules
@@ -23,7 +24,7 @@ Muninn is a pet project, but a serious one. Keep process proportional: enough ri
 2. **Evidence comes from execution.** Never mark a proof *Passed*, or claim something works, without running it and keeping the raw output. A written test is not evidence. A review is not evidence.
 3. **Reviews don't replace tests or human judgment.** A reviewer saying something is safe doesn't make it safe.
 4. **Decisions belong to the maintainer.** Agents propose; the maintainer accepts. Changes to `docs/designs/` and `docs/decisions.md` go in the same commit.
-5. `swift build` and `swift test` must work without opening Xcode.
+5. `swift build` and `swift test` must work without opening Xcode. `scripts/check.sh` must pass before a commit.
 6. Swift 6 strict concurrency. No new `@unchecked Sendable`, `nonisolated(unsafe)`, GCD or locks outside the allow-listed C-interop files. No shared mutable singletons.
 7. No new dependencies without a decision entry.
 8. Commit or push only when asked.
